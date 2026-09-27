@@ -1,0 +1,48 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1790350211994,
+      "tag": "0000_neat_santa_claus",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790350311187,
+      "tag": "0001_fearless_switch",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790387405438,
+      "tag": "0002_lean_madame_hydra",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790389467663,
+      "tag": "0003_unique_morbius",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1790390410402,
+      "tag": "0004_unusual_pepper_potts",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790402481459,
+      "tag": "0005_smart_energizer",
+      "breakpoints": true
+    }
+  ]
+}

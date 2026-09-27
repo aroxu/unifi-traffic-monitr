@@ -1,0 +1,98 @@
+services:
+  db:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: traffic
+      POSTGRES_USER: traffic
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U traffic -d traffic"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      network: host
+    image: ${UTM_IMAGE:-unifi-traffic-monitor:local}
+    command: ["pnpm", "db:migrate"]
+    environment:
+      DB_HOST: db
+      DB_NAME: traffic
+      DB_USER: traffic
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:?set BETTER_AUTH_URL}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  bootstrap-admin:
+    image: ${UTM_IMAGE:-unifi-traffic-monitor:local}
+    command: ["pnpm", "--filter", "@utm/web", "bootstrap:admin"]
+    environment:
+      DB_HOST: db
+      DB_NAME: traffic
+      DB_USER: traffic
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:?set BETTER_AUTH_URL}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  web:
+    image: ${UTM_IMAGE:-unifi-traffic-monitor:local}
+    environment:
+      DB_HOST: db
+      DB_NAME: traffic
+      DB_USER: traffic
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL}
+    ports:
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-3000}:3000"
+    depends_on:
+      bootstrap-admin:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  collector:
+    profiles: ["collector"]
+    image: ${UTM_IMAGE:-unifi-traffic-monitor:local}
+    command: ["pnpm", "--filter", "@utm/collector", "start"]
+    stop_grace_period: 60s
+    environment:
+      DB_HOST: db
+      DB_NAME: traffic
+      DB_USER: traffic
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      UNIFI_URL: ${UNIFI_URL:-}
+      UNIFI_CONNECT_IP: ${UNIFI_CONNECT_IP:-}
+      UNIFI_CA_FILE: ${UNIFI_CA_FILE:-}
+      UNIFI_SITE: ${UNIFI_SITE:-default}
+      UNIFI_SITE_UUID: ${UNIFI_SITE_UUID:-}
+      UNIFI_API_KEY: ${UNIFI_API_KEY:-}
+      UNIFI_COOKIE: ${UNIFI_COOKIE:-}
+      UNIFI_WIRED_SCOPE: ${UNIFI_WIRED_SCOPE:-}
+      UNIFI_WIRED_RX_DIRECTION: ${UNIFI_WIRED_RX_DIRECTION:-}
+      UNIFI_WIRELESS_SCOPE: ${UNIFI_WIRELESS_SCOPE:-}
+      UNIFI_WIRELESS_RX_DIRECTION: ${UNIFI_WIRELESS_RX_DIRECTION:-}
+      NODE_EXTRA_CA_CERTS: ${UNIFI_CA_FILE:-}
+      COLLECT_INTERVAL_MS: ${COLLECT_INTERVAL_MS:-30000}
+    depends_on:
+      bootstrap-admin:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

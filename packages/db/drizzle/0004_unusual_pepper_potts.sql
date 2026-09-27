@@ -1,0 +1,1 @@
+CREATE INDEX "rollups_scope_resolution_time_idx" ON "traffic_rollups" USING btree ("scope","resolution","bucket_start");

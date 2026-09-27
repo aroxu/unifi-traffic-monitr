@@ -1,0 +1,33 @@
+# Optional local override for hosts where Docker bridge containers cannot reach the LAN.
+# Keep PostgreSQL on the Compose network and publish it only to host loopback.
+services:
+  db:
+    ports:
+      - '127.0.0.1:5433:5432'
+  migrate:
+    network_mode: host
+    environment:
+      DB_HOST: 127.0.0.1
+      DB_PORT: '5433'
+  bootstrap-admin:
+    network_mode: host
+    environment:
+      DB_HOST: 127.0.0.1
+      DB_PORT: '5433'
+  collector:
+    network_mode: host
+    environment:
+      DB_HOST: 127.0.0.1
+      DB_PORT: '5433'
+      UNIFI_CA_FILE: /run/secrets/unifi-ca.pem
+      NODE_EXTRA_CA_CERTS: /run/secrets/unifi-ca.pem
+    volumes:
+      - ../.local/unifi-ca.pem:/run/secrets/unifi-ca.pem:ro
+  web:
+    network_mode: host
+    ports: !reset []
+    command: ['pnpm', '--filter', '@utm/web', 'start', '--hostname', '127.0.0.1', '--port', '3001']
+    environment:
+      DB_HOST: 127.0.0.1
+      DB_PORT: '5433'
+      BETTER_AUTH_URL: http://127.0.0.1:3001

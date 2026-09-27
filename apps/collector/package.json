@@ -1,0 +1,6 @@
+{
+  "name":"@utm/collector","version":"0.1.0","private":true,"type":"module",
+  "scripts":{"dev":"tsx watch src/index.ts","start":"tsx src/index.ts","measure":"tsx src/measure.ts","typecheck":"tsc --project tsconfig.json","test":"vitest run"},
+  "dependencies":{"@utm/db":"workspace:*","@utm/metrics":"workspace:*","@utm/unifi":"workspace:*","pg":"8.23.0"},
+  "devDependencies":{"@types/pg":"8.23.1","tsx":"4.23.15","vitest":"5.0.2"}
+}

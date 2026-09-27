@@ -1,0 +1,10 @@
+{
+  "name": "@utm/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {".": "./src/index.ts", "./schema": "./src/schema.ts", "./auth-schema": "./src/auth-schema.ts"},
+  "scripts": {"typecheck": "tsc --project tsconfig.json", "generate": "drizzle-kit generate", "migrate": "tsx src/migrate.ts"},
+  "dependencies": {"drizzle-orm": "0.45.3", "pg": "8.23.0"},
+  "devDependencies": {"@types/pg": "8.23.1", "drizzle-kit": "0.31.11", "tsx": "4.23.15"}
+}

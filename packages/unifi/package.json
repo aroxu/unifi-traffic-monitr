@@ -1,0 +1,7 @@
+{
+  "name":"@utm/unifi","version":"0.1.0","private":true,"type":"module",
+  "exports":{".":"./src/index.ts"},
+  "scripts":{"typecheck":"tsc --project tsconfig.json","poc":"tsx src/poc.ts","dpi:poc":"tsx src/dpi-poc.ts","test":"vitest run"},
+  "dependencies":{"undici":"8.11.2"},
+  "devDependencies":{"tsx":"4.23.15","vitest":"5.0.2"}
+}

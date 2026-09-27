@@ -1,0 +1,4 @@
+# Pull the published image for migration, admin bootstrap, web, and collector.
+services:
+  migrate:
+    build: !reset null

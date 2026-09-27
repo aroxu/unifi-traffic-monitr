@@ -1,0 +1,1 @@
+CREATE INDEX "samples_collected_idx" ON "client_samples" USING btree ("collected_at");

@@ -1,0 +1,20 @@
+{
+  "name": "unifi-traffic-monitor",
+  "private": true,
+  "packageManager": "pnpm@12.4.1",
+  "scripts": {
+    "dev": "pnpm --filter @utm/web dev",
+    "build": "pnpm --filter @utm/web build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "db:generate": "pnpm --filter @utm/db generate",
+    "db:migrate": "pnpm --filter @utm/db migrate",
+    "poc": "pnpm --filter @utm/unifi poc",
+    "admin:create": "pnpm --filter @utm/web admin:create"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.2",
+    "typescript": "5.9.3",
+    "vitest": "5.0.2"
+  }
+}
