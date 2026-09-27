@@ -55,7 +55,23 @@ cp .env.example .env
 docker compose up -d
 ```
 
-웹은 기본적으로 호스트의 `127.0.0.1:3000`에서 열립니다. 다른 기기에서 접근하려면 `WEB_BIND`와 외부 HTTPS 프록시를 환경에 맞게 설정하세요. UniFi 인증서가 사설 CA로 발급됐다면 예시 Compose의 collector 볼륨을 활성화하고 `.env`의 `UNIFI_CA_FILE`을 컨테이너 안의 경로로 설정해야 합니다.
+웹은 기본적으로 호스트의 `127.0.0.1:3000`에서 열립니다. 다른 기기에서 접근하려면 `WEB_BIND`와 외부 HTTPS 프록시를 환경에 맞게 설정하세요. UniFi 인증서가 사설 CA로 발급됐다면 `.env`의 `UNIFI_CA_HOST_FILE`에 **Docker 호스트에 실제 존재하는 PEM 파일의 절대 경로**를 지정하고 CA 오버라이드를 함께 사용하세요.
+
+```sh
+cd examples/ghcr
+# .env에서 UNIFI_CA_HOST_FILE=/absolute/path/to/unifi-ca.pem 설정
+docker compose -f docker-compose.yml -f docker-compose.ca.yml up -d
+```
+
+CA 오버라이드는 호스트 파일을 컨테이너의 `/run/secrets/unifi-ca.pem`에 읽기 전용으로 마운트하고, 수집기에는 그 컨테이너 경로를 전달합니다. 기존 `.env`의 `UNIFI_CA_FILE`에 호스트 경로를 넣으면 컨테이너에서 파일을 찾지 못합니다.
+
+이 저장소를 사용하던 호스트에는 이미 `.local/unifi-ca.pem`이 있습니다. 같은 호스트라면 그 파일의 절대 경로를 `UNIFI_CA_HOST_FILE`에 넣으면 됩니다. 다른 호스트에서 실행한다면 이 PEM 파일을 해당 Docker 호스트로 복사할 수 있습니다. 파일이 없고 UniFi가 자체 서명 인증서를 사용한다면, 기기에서 현재 제공하는 공개 인증서를 다음처럼 추출할 수 있습니다. `YOUR_UNIFI_IP`를 실제 접속 주소로 바꾸고, 저장 전 SHA-256 지문을 신뢰할 수 있는 기존 인증서나 관리 화면에서 확인하세요.
+
+```sh
+openssl s_client -connect YOUR_UNIFI_IP:443 -servername unifi.local </dev/null 2>/dev/null \
+  | openssl x509 -out unifi-ca.pem
+openssl x509 -in unifi-ca.pem -noout -fingerprint -sha256
+```
 
 ```sh
 cp .env.example .env

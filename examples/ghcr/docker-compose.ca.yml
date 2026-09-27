@@ -1,0 +1,13 @@
+# Add this file only when UniFi uses a private or self-signed CA.
+services:
+  collector:
+    environment:
+      UNIFI_CA_FILE: /run/secrets/unifi-ca.pem
+      NODE_EXTRA_CA_CERTS: /run/secrets/unifi-ca.pem
+    volumes:
+      - type: bind
+        source: ${UNIFI_CA_HOST_FILE:?Set UNIFI_CA_HOST_FILE to an existing PEM file on the Docker host}
+        target: /run/secrets/unifi-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false

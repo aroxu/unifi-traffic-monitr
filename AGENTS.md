@@ -332,3 +332,9 @@
 
 - `examples/ghcr/docker-compose.yml`에 공개 GHCR 이미지와 PostgreSQL, 마이그레이션, 첫 관리자 생성, 웹, collector의 실행 순서를 담았다. UniFi 연결 주소·API 키는 collector에만 전달한다.
 - `examples/ghcr/.env.example`에 필수 변수와 선택적 CA 설정을 문서화했다. 로컬 검토용 `examples/ghcr/.env`는 빈 필수값으로 만들고 Git에서 제외했다. 기존 루트 `.env`와 실행 컨테이너는 변경하지 않았다.
+
+## 2026-09-28: GHCR 예시의 CA 경로 수정
+
+- 예시에서 `UNIFI_CA_FILE`에 호스트 경로를 그대로 전달하면 컨테이너 내부에서 ENOENT가 발생한다. 기본 Compose에서 이 변수를 제거하고, `docker-compose.ca.yml`이 `UNIFI_CA_HOST_FILE`의 호스트 PEM을 `/run/secrets/unifi-ca.pem`에 읽기 전용으로 마운트하도록 분리했다.
+- 로컬 예시 `.env`와 공개 `.env.example`의 CA 변수 이름을 갱신했다. 루트 운영 `.env`와 운영 컨테이너는 변경하지 않는다.
+- 이 호스트의 기존 `.local/unifi-ca.pem`이 현재 UniFi 장비가 제공하는 자체 서명 인증서와 일치함을 읽기 전용 TLS 연결과 SHA-256 비교로 확인했다. 예시 CA 오버라이드의 마운트·컨테이너 경로를 Compose 설정으로 확인했다.
