@@ -318,4 +318,6 @@
 - GitHub Actions의 GHCR 게시 워크플로와 GHCR 이미지를 받는 Compose 오버라이드를 추가했다. 동일 이미지가 DB 마이그레이션, 첫 관리자 생성, 웹, collector에 쓰인다. API 연결 주소와 키는 이미지에 넣지 않고 `.env`에서 collector 런타임으로 전달한다.
 - 빈 DB 첫 관리자 생성은 `.env`의 관리자 이메일·비밀번호를 읽는다. 기존 사용자가 있으면 재시작 시 계정이나 비밀번호를 바꾸지 않는다. 기존 운영 DB에서는 건너뛰기를 확인했다.
 - 별도 임시 PostgreSQL DB에서 전체 마이그레이션 뒤 첫 관리자 생성, 관리자 역할·이메일 확인 상태·로그인용 계정 생성, 재실행 시 건너뛰기를 확인했다. 임시 DB는 제거했다. 비밀번호·계정 식별 정보는 기록하지 않았다.
-- 전체 타입 검사와 로컬/GHCR Compose 해석이 통과했다. 게시 전 이미지 빌드와 GitHub 저장소 게시 상태를 추가 확인한다.
+- 전체 타입 검사, 로컬 Docker 이미지 빌드, 로컬/GHCR Compose 해석이 통과했다. 게시용 GitHub 저장소는 비공개로 생성했다.
+- 비공개 GitHub 저장소 `main`의 `db4c352` 커밋으로 Actions 게시 작업이 성공했다. GHCR에 `latest`와 `sha-db4c35220d4784460ffdcea1d201261d763eda98` 태그를 푸시했고, amd64·arm64 manifest list digest는 `sha256:7727f4ae42a05717321b07009cb39811645134f77f30254cd1f6de336f5552f5`다.
+- 로컬 GitHub 토큰에는 `read:packages` 권한이 없어 패키지 메타데이터 조회와 비공개 이미지 pull은 검증하지 못했다. Actions 로그에서 두 태그의 manifest push 완료를 확인했다. 배포 호스트에서 pull하려면 GHCR `read:packages` 권한으로 로그인해야 한다.
