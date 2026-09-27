@@ -46,6 +46,17 @@ pnpm dev
 
 `ghcr.io/aroxu/unifi-traffic-monitr:latest` 이미지는 GitHub Actions가 `main` 변경 시 `linux/amd64`와 `linux/arm64`로 게시합니다. 태그 `v*`를 푸시하면 동일한 버전 태그도 게시합니다. 이미지 안에 `.env`나 장비 인증 정보는 포함하지 않습니다.
 
+이미지만 받아 실행하는 독립 예시는 [`examples/ghcr/docker-compose.yml`](examples/ghcr/docker-compose.yml)과 [`examples/ghcr/.env.example`](examples/ghcr/.env.example)에 있습니다. `examples/ghcr` 디렉터리에서 다음처럼 시작합니다. `.env`의 빈 필수값을 먼저 채우세요. `BETTER_AUTH_SECRET`은 충분히 긴 무작위 값으로 지정합니다.
+
+```sh
+cd examples/ghcr
+cp .env.example .env
+# .env에 DB·관리자 인증 정보, UniFi Network HTTPS 주소·API 키·사이트 UUID 설정
+docker compose up -d
+```
+
+웹은 기본적으로 호스트의 `127.0.0.1:3000`에서 열립니다. 다른 기기에서 접근하려면 `WEB_BIND`와 외부 HTTPS 프록시를 환경에 맞게 설정하세요. UniFi 인증서가 사설 CA로 발급됐다면 예시 Compose의 collector 볼륨을 활성화하고 `.env`의 `UNIFI_CA_FILE`을 컨테이너 안의 경로로 설정해야 합니다.
+
 ```sh
 cp .env.example .env
 # .env에서 UTM_IMAGE=ghcr.io/aroxu/unifi-traffic-monitr:latest 및

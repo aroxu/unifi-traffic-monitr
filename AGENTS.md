@@ -327,3 +327,8 @@
 - 공개 전환 전에 전체 Git 이력과 추적 파일에서 실제 UniFi API 키·관리자 비밀번호·GitHub 토큰 패턴이 없는지 확인했다. 공개 저장소에는 빈 환경변수 예시와 런타임 변수 이름만 남긴다.
 - GitHub 저장소와 연결된 GHCR 컨테이너 패키지를 모두 공개로 전환했다. 패키지 설정 화면에서 현재 공개 상태를 확인했고, 익명 `docker buildx imagetools inspect ghcr.io/aroxu/unifi-traffic-monitr:latest`가 성공했다.
 - 공개 이미지 digest는 기존 `sha256:7727f4ae42a05717321b07009cb39811645134f77f30254cd1f6de336f5552f5`이며 linux/amd64·linux/arm64 manifest를 포함한다. 공개 README는 HTTP 200으로 확인했다.
+
+## 2026-09-27: 공개 이미지 독립 실행 예시
+
+- `examples/ghcr/docker-compose.yml`에 공개 GHCR 이미지와 PostgreSQL, 마이그레이션, 첫 관리자 생성, 웹, collector의 실행 순서를 담았다. UniFi 연결 주소·API 키는 collector에만 전달한다.
+- `examples/ghcr/.env.example`에 필수 변수와 선택적 CA 설정을 문서화했다. 로컬 검토용 `examples/ghcr/.env`는 빈 필수값으로 만들고 Git에서 제외했다. 기존 루트 `.env`와 실행 컨테이너는 변경하지 않았다.

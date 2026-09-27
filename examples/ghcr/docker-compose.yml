@@ -1,0 +1,95 @@
+services:
+  db:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: traffic
+      POSTGRES_USER: traffic
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U traffic -d traffic"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    image: ghcr.io/aroxu/unifi-traffic-monitr:latest
+    command: ["pnpm", "db:migrate"]
+    environment:
+      DB_HOST: db
+      DB_NAME: traffic
+      DB_USER: traffic
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in .env}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:?Set BETTER_AUTH_URL in .env}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  bootstrap-admin:
+    image: ghcr.io/aroxu/unifi-traffic-monitr:latest
+    command: ["pnpm", "--filter", "@utm/web", "bootstrap:admin"]
+    environment:
+      DB_HOST: db
+      DB_NAME: traffic
+      DB_USER: traffic
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?Set ADMIN_EMAIL in .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  web:
+    image: ghcr.io/aroxu/unifi-traffic-monitr:latest
+    environment:
+      DB_HOST: db
+      DB_NAME: traffic
+      DB_USER: traffic
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL}
+    ports:
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-3000}:3000"
+    depends_on:
+      bootstrap-admin:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  collector:
+    image: ghcr.io/aroxu/unifi-traffic-monitr:latest
+    command: ["pnpm", "--filter", "@utm/collector", "start"]
+    stop_grace_period: 60s
+    environment:
+      DB_HOST: db
+      DB_NAME: traffic
+      DB_USER: traffic
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      UNIFI_URL: ${UNIFI_URL:?Set UNIFI_URL in .env}
+      UNIFI_API_KEY: ${UNIFI_API_KEY:?Set UNIFI_API_KEY in .env}
+      UNIFI_SITE: ${UNIFI_SITE:-default}
+      UNIFI_SITE_UUID: ${UNIFI_SITE_UUID:?Set UNIFI_SITE_UUID in .env}
+      UNIFI_CONNECT_IP: ${UNIFI_CONNECT_IP:-}
+      UNIFI_CA_FILE: ${UNIFI_CA_FILE:-}
+      NODE_EXTRA_CA_CERTS: ${UNIFI_CA_FILE:-}
+      UNIFI_WIRED_SCOPE: ${UNIFI_WIRED_SCOPE:-reported}
+      UNIFI_WIRED_RX_DIRECTION: ${UNIFI_WIRED_RX_DIRECTION:-upload}
+      UNIFI_WIRELESS_SCOPE: ${UNIFI_WIRELESS_SCOPE:-reported}
+      UNIFI_WIRELESS_RX_DIRECTION: ${UNIFI_WIRELESS_RX_DIRECTION:-upload}
+      COLLECT_INTERVAL_MS: ${COLLECT_INTERVAL_MS:-30000}
+    # For a private CA, put its PEM file beside this Compose file and uncomment:
+    # volumes:
+    #   - ./unifi-ca.pem:/run/secrets/unifi-ca.pem:ro
+    depends_on:
+      bootstrap-admin:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
