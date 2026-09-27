@@ -58,7 +58,7 @@ docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.ghcr.yam
 
 관리자 이메일·비밀번호는 **빈 DB에 첫 계정을 만들 때만** 사용합니다. 기존 사용자가 있으면 건너뛰며, `.env`를 바꿔도 기존 비밀번호는 변경되지 않습니다. `UNIFI_URL`은 Network 앱의 HTTPS 주소이고 `UNIFI_API_KEY`는 collector에만 전달됩니다. `UNIFI_SITE_UUID`와 `UNIFI_SITE`도 같은 사이트를 가리켜야 합니다. `UNIFI_WIRED_SCOPE=reported`, `UNIFI_WIRED_RX_DIRECTION=upload`, `UNIFI_WIRELESS_SCOPE=reported`, `UNIFI_WIRELESS_RX_DIRECTION=upload`을 설정하면 API 보고 사용량을 표시합니다.
 
-사설 CA를 쓰는 경우 CA 파일을 collector 컨테이너에 읽기 전용으로 마운트하고 `UNIFI_CA_FILE`에 컨테이너 안의 경로를 지정하세요. 이 호스트의 `deploy/compose.local.yaml`이 해당 예시입니다. 이미지가 비공개이면 GHCR에서 이미지를 받을 수 있는 계정의 `read:packages` 토큰으로 `docker login ghcr.io`를 먼저 실행해야 합니다.
+사설 CA를 쓰는 경우 CA 파일을 collector 컨테이너에 읽기 전용으로 마운트하고 `UNIFI_CA_FILE`에 컨테이너 안의 경로를 지정하세요. 이 호스트의 `deploy/compose.local.yaml`이 해당 예시입니다. GHCR 이미지는 공개되어 있어 별도 로그인 없이 받을 수 있습니다.
 
 Compose 사용 시 저장소 루트에서 `docker compose --env-file .env -f deploy/compose.yaml up -d db migrate web`로 시작합니다. 실장비 PoC와 사이트 매핑을 마친 뒤 `docker compose --env-file .env -f deploy/compose.yaml --profile collector up -d collector`를 실행합니다. `collector`는 클라이언트·장비 정보와 원본 카운터를 저장하며 UCG 자격 증명은 collector 서비스에만 전달됩니다.
 

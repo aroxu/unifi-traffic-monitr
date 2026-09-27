@@ -321,3 +321,9 @@
 - 전체 타입 검사, 로컬 Docker 이미지 빌드, 로컬/GHCR Compose 해석이 통과했다. 게시용 GitHub 저장소는 비공개로 생성했다.
 - 비공개 GitHub 저장소 `main`의 `db4c352` 커밋으로 Actions 게시 작업이 성공했다. GHCR에 `latest`와 `sha-db4c35220d4784460ffdcea1d201261d763eda98` 태그를 푸시했고, amd64·arm64 manifest list digest는 `sha256:7727f4ae42a05717321b07009cb39811645134f77f30254cd1f6de336f5552f5`다.
 - 로컬 GitHub 토큰에는 `read:packages` 권한이 없어 패키지 메타데이터 조회와 비공개 이미지 pull은 검증하지 못했다. Actions 로그에서 두 태그의 manifest push 완료를 확인했다. 배포 호스트에서 pull하려면 GHCR `read:packages` 권한으로 로그인해야 한다.
+
+## 2026-09-27: 저장소·GHCR 공개 전환
+
+- 공개 전환 전에 전체 Git 이력과 추적 파일에서 실제 UniFi API 키·관리자 비밀번호·GitHub 토큰 패턴이 없는지 확인했다. 공개 저장소에는 빈 환경변수 예시와 런타임 변수 이름만 남긴다.
+- GitHub 저장소와 연결된 GHCR 컨테이너 패키지를 모두 공개로 전환했다. 패키지 설정 화면에서 현재 공개 상태를 확인했고, 익명 `docker buildx imagetools inspect ghcr.io/aroxu/unifi-traffic-monitr:latest`가 성공했다.
+- 공개 이미지 digest는 기존 `sha256:7727f4ae42a05717321b07009cb39811645134f77f30254cd1f6de336f5552f5`이며 linux/amd64·linux/arm64 manifest를 포함한다. 공개 README는 HTTP 200으로 확인했다.
