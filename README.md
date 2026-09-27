@@ -65,6 +65,8 @@ docker compose -f docker-compose.yml -f docker-compose.ca.yml up -d
 
 CA 오버라이드는 호스트 파일을 컨테이너의 `/run/secrets/unifi-ca.pem`에 읽기 전용으로 마운트하고, 수집기에는 그 컨테이너 경로를 전달합니다. 기존 `.env`의 `UNIFI_CA_FILE`에 호스트 경로를 넣으면 컨테이너에서 파일을 찾지 못합니다.
 
+인증서의 이름이 `unifi.local`이라면 `UNIFI_URL=https://unifi.local`로 설정하세요. DNS가 장비에 연결되지 않으면 `UNIFI_CONNECT_IP`에 실제 접속 주소를 지정할 수 있습니다. 인증서에 없는 IP 주소를 `UNIFI_URL`의 호스트로 쓰면 인증서 이름 검증이 실패합니다.
+
 이 저장소를 사용하던 호스트에는 이미 `.local/unifi-ca.pem`이 있습니다. 같은 호스트라면 그 파일의 절대 경로를 `UNIFI_CA_HOST_FILE`에 넣으면 됩니다. 다른 호스트에서 실행한다면 이 PEM 파일을 해당 Docker 호스트로 복사할 수 있습니다. 파일이 없고 UniFi가 자체 서명 인증서를 사용한다면, 기기에서 현재 제공하는 공개 인증서를 다음처럼 추출할 수 있습니다. `YOUR_UNIFI_IP`를 실제 접속 주소로 바꾸고, 저장 전 SHA-256 지문을 신뢰할 수 있는 기존 인증서나 관리 화면에서 확인하세요.
 
 ```sh
