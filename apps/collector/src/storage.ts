@@ -122,12 +122,15 @@ export async function saveCycle(client: PoolClient, dbSiteId: string, startedAt:
     await client.query(`DELETE FROM collector_checkpoints cp USING clients c
       WHERE cp.client_id=c.id AND c.site_id=$1 AND c.online=false`, [dbSiteId]);
     if (measuredIntervals > 0) await client.query(`UPDATE collector_runs SET status='measured' WHERE id=$1`, [runId]);
+    await client.query(`SELECT pg_notify('utm_collection', $1)`, [runId]);
     await client.query('COMMIT');
     return rawCount;
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
-    await client.query(`INSERT INTO collector_runs (site_id,started_at,finished_at,status,error_code)
-      VALUES ($1,$2,now(),'error','db_write_failed')`, [dbSiteId, startedAt]).catch(() => {});
+    await client.query(`WITH failed AS (
+      INSERT INTO collector_runs (site_id,started_at,finished_at,status,error_code)
+      VALUES ($1,$2,now(),'error','db_write_failed') RETURNING id
+    ) SELECT pg_notify('utm_collection', id::text) FROM failed`, [dbSiteId, startedAt]).catch(() => {});
     throw error;
   }
 }

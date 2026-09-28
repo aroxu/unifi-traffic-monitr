@@ -99,6 +99,10 @@ docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.ya
 
 Compose의 첫 실행은 `.env`의 `ADMIN_EMAIL`과 `ADMIN_PASSWORD`로 빈 DB에 관리자를 생성합니다. 이 호스트에는 로컬 관리자 계정이 이미 생성되어 있어 초기화 작업은 계정을 변경하지 않습니다. 자격 정보는 저장소 밖 또는 Git에서 제외한 로컬 파일에만 둡니다.
 
+## 화면 자동 갱신
+
+대시보드에 로그인한 동안 웹은 인증된 `/api/overview/events` 연결로 PostgreSQL 수집 완료 신호를 받습니다. 새 수집 결과가 DB에 커밋되면 개요·목록·상세·장비·상태 화면이 최신 DB 값을 다시 읽습니다. 브라우저 탭을 숨기면 연결을 닫고 다시 볼 때 재연결하며, 연결할 수 없으면 주기적 조회를 사용합니다. 이것은 수집 주기마다 화면을 갱신하는 기능이며 장비에서 실시간 패킷을 직접 측정하는 기능은 아닙니다. 역방향 프록시를 사용한다면 이 경로의 스트리밍 응답 버퍼링을 끄세요. 웹은 `X-Accel-Buffering: no` 헤더를 보냅니다.
+
 ## 백업과 복원
 
 `deploy/backup.sh`는 Docker PostgreSQL의 압축 덤프를 만들고 목차를 검증합니다. 기존 파일은 덮어쓰지 않으며 권한은 소유자 전용입니다.

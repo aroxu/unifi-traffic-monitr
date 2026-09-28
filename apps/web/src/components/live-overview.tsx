@@ -1,6 +1,6 @@
 'use client';
 
-import {useState} from 'react';
+import {useEffect, useState} from 'react';
 import {QueryClient, QueryClientProvider, useQuery} from '@tanstack/react-query';
 import {Button, Card} from '@heroui/react';
 import Link from 'next/link';
@@ -30,9 +30,14 @@ async function fetchOverview(): Promise<Overview> {
 function OverviewContents({initialData}: {initialData: Overview}) {
   const {data, isError, refetch} = useQuery({
     queryKey: ['overview'], queryFn: fetchOverview, initialData,
-    staleTime: 5000, refetchInterval: 10000, refetchIntervalInBackground: false,
+    staleTime: 5000, refetchInterval: 60000, refetchIntervalInBackground: false,
     refetchOnWindowFocus: true, retry: 1
   });
+  useEffect(() => {
+    const refresh = () => { void refetch(); };
+    window.addEventListener('utm:collection', refresh);
+    return () => window.removeEventListener('utm:collection', refresh);
+  }, [refetch]);
   const latestTime = data.latestRun?.finishedAt ? new Date(data.latestRun.finishedAt) : null;
   const stale = latestTime ? Date.now() - latestTime.getTime() > 90000 : false;
   const withoutCounters = data.counterClientCount !== null && data.latestRun?.clientCount !== null &&

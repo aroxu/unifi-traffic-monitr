@@ -28,7 +28,10 @@ function classify(error: unknown): string {
 }
 
 async function recordError(client: PoolClient, dbSiteId: string, startedAt: Date, error: unknown): Promise<void> {
-  await client.query('INSERT INTO collector_runs (site_id, started_at, finished_at, status, error_code) VALUES ($1,$2,now(),$3,$4)',
+  await client.query(`WITH failed AS (
+    INSERT INTO collector_runs (site_id, started_at, finished_at, status, error_code)
+    VALUES ($1,$2,now(),$3,$4) RETURNING id
+  ) SELECT pg_notify('utm_collection', id::text) FROM failed`,
     [dbSiteId, startedAt, 'error', classify(error)]);
 }
 
