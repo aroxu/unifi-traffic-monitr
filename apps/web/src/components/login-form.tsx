@@ -17,9 +17,9 @@ export function LoginForm() {
     finally {setPending(false);}
   }
   return <form onSubmit={submit} className="space-y-4">
-    <label className="block text-sm font-medium">이메일<input name="email" type="email" required autoComplete="username" className="mt-2 min-h-11 w-full rounded-xl border border-black/20 bg-transparent px-3 dark:border-white/20" /></label>
-    <label className="block text-sm font-medium">비밀번호<input name="password" type="password" required autoComplete="current-password" className="mt-2 min-h-11 w-full rounded-xl border border-black/20 bg-transparent px-3 dark:border-white/20" /></label>
+    <label className="input-label">이메일<input name="email" type="email" required autoComplete="username" className="input-field" /></label>
+    <label className="input-label">비밀번호<input name="password" type="password" required autoComplete="current-password" className="input-field" /></label>
     {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
-    <Button type="submit" isDisabled={pending} className="w-full">{pending ? '확인 중…' : '로그인'}</Button>
+    <Button type="submit" isDisabled={pending} className="primary-button min-h-11 w-full">{pending ? '확인 중…' : '로그인'}</Button>
   </form>;
 }

@@ -4,6 +4,7 @@ import {useState} from 'react';
 import {QueryClient, QueryClientProvider, useQuery} from '@tanstack/react-query';
 import {Button, Card} from '@heroui/react';
 import Link from 'next/link';
+import {ArrowUpRight, DatabaseZap, RadioTower, UsersRound} from 'lucide-react';
 import {dateTime, runStatus} from '@/lib/format';
 import {formatUsage, TrafficChart, type TrafficData} from '@/components/traffic-chart';
 
@@ -38,29 +39,34 @@ function OverviewContents({initialData}: {initialData: Overview}) {
     data.latestRun?.clientCount !== undefined
     ? Math.max(0, data.latestRun.clientCount - data.counterClientCount) : null;
   const scopeLabel = data.traffic?.scope === 'internet' ? '인터넷' : data.traffic?.scope === 'lan' ? 'LAN' : data.traffic?.scope === 'reported' ? '컨트롤러 보고' : '전체 연결';
-  return <div className="space-y-6">
-    <div><h1 className="text-3xl font-semibold">개요</h1><p className="mt-2 muted">마지막으로 저장된 수집 결과를 표시합니다.</p></div>
+  const running = !isError && !stale && data.latestRun?.status !== 'error' && data.latestRun !== null;
+  return <div className="space-y-5">
+    <section className="overview-hero">
+      <div><div className="eyebrow">NETWORK OVERVIEW</div><h1>네트워크 한눈에 보기</h1>
+        <p>마지막으로 저장된 수집 결과를 바탕으로 표시합니다.</p></div>
+      <Link href="/settings">수집 상태 보기 <ArrowUpRight size={15} aria-hidden="true" /></Link>
+    </section>
     {isError && <div role="alert" className="panel flex flex-wrap items-center gap-3 text-sm"><span>최신 상태를 읽지 못했습니다. 마지막으로 받은 값을 표시합니다.</span><Button size="sm" variant="secondary" onPress={() => void refetch()}>다시 읽기</Button></div>}
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-      <Card><Card.Header><Card.Title>클라이언트</Card.Title></Card.Header><Card.Content><p className="number text-3xl font-semibold">{data.clientCount}</p><p className="mt-1 text-sm muted">{data.onlineCount === null || data.offlineCount === null ? '온라인 상태 미확인' : `온라인 ${data.onlineCount}대 · 오프라인 ${data.offlineCount}대`}</p></Card.Content></Card>
-      <Card><Card.Header><Card.Title>최근 트래픽 정보</Card.Title></Card.Header><Card.Content><p className="number text-3xl font-semibold">{data.rawCounterCount ?? '—'}</p><p className="mt-1 text-sm muted">{data.latestRun?.status === 'error' ? '최근 수집 실패로 확인할 수 없습니다' : data.rawCounterCount === null ? '첫 수집을 기다리는 중입니다' : '이번 수집에서 받은 정보'}{withoutCounters ? ` · 확인하지 못한 연결 기기 ${withoutCounters}대` : ''}</p></Card.Content></Card>
-      <Card><Card.Header><Card.Title>최근 수집</Card.Title></Card.Header><Card.Content><p className="text-lg font-semibold">{runStatus(data.latestRun?.status)}</p><p className="mt-1 text-sm muted">{dateTime(latestTime)}{stale ? ' · 90초 이상 지연' : ''}</p></Card.Content></Card>
+    <div className="metric-grid">
+      <Card className="metric-card"><Card.Header><div className="metric-icon"><UsersRound size={19} aria-hidden="true" /></div><Card.Title>클라이언트</Card.Title></Card.Header><Card.Content><p className="metric-value number">{data.clientCount}<span className="ml-1 text-base font-semibold">대</span></p><p className="metric-caption">{data.onlineCount === null || data.offlineCount === null ? '온라인 상태 미확인' : `온라인 ${data.onlineCount}대 · 오프라인 ${data.offlineCount}대`}</p></Card.Content></Card>
+      <Card className="metric-card"><Card.Header><div className="metric-icon"><DatabaseZap size={19} aria-hidden="true" /></div><Card.Title>최근 트래픽 정보</Card.Title></Card.Header><Card.Content><p className="metric-value number">{data.rawCounterCount ?? '—'}{data.rawCounterCount !== null && <span className="ml-1 text-base font-semibold">건</span>}</p><p className="metric-caption">{data.latestRun?.status === 'error' ? '최근 수집 실패로 확인할 수 없습니다' : data.rawCounterCount === null ? '첫 수집을 기다리는 중입니다' : '이번 수집에서 받은 정보'}{withoutCounters ? ` · 확인하지 못한 연결 기기 ${withoutCounters}대` : ''}</p></Card.Content></Card>
+      <Card className="metric-card"><Card.Header><div className="metric-icon"><RadioTower size={19} aria-hidden="true" /></div><Card.Title>최근 수집</Card.Title></Card.Header><Card.Content><p className="metric-value text-[1.45rem]">{runStatus(data.latestRun?.status)}</p><p className="metric-caption">{dateTime(latestTime)}{stale ? ' · 90초 이상 지연' : ''}</p></Card.Content></Card>
     </div>
-    {data.traffic && <Card><Card.Header><Card.Title>최근 24시간 {scopeLabel} 트래픽</Card.Title></Card.Header>
-      <Card.Content>{data.traffic.scope === 'reported' && <p className="text-sm muted">UniFi가 알려준 트래픽 정보 기준입니다. 인터넷·LAN 포함 범위와 실제 전송량의 오차는 확인하지 않았습니다.</p>}<TrafficChart data={data.traffic} />
-        {data.traffic.topClients.length > 0 && <div className="mt-6"><h2 className="font-semibold">상위 클라이언트</h2>
-          <ul className="mt-2 divide-y divide-current/10">{data.traffic.topClients.map(client => <li key={client.id}>
-            <Link href={`/clients/${client.id}`} className="flex min-h-11 items-center justify-between gap-4 py-3 text-sm underline">
-              <span className="truncate">{client.name ?? client.mac}</span><span className="number shrink-0">{formatUsage(client.totalBytes)}</span>
-            </Link></li>)}</ul>
-        </div>}
-      </Card.Content></Card>}
-    <Card><Card.Header><Card.Title>연결 상태</Card.Title></Card.Header><Card.Content className="space-y-3">
-      {data.sites.length === 0 ? <p className="muted">등록된 사이트가 없습니다. UCG 접근 정보를 로컬에 설정하고 PoC를 실행해 원본 필드를 검증하세요.</p> :
-        <p className="muted">사이트: {data.sites.map(site => site.label).join(', ')}</p>}
-      <p className="text-sm muted">{data.hasMeasuredUsage ? '컨트롤러 보고 사용량 기록이 있습니다. 클라이언트 상세에서 기간별 사용량을 확인하세요.' : '첫 사용량 구간이 쌓이면 기간별 결과를 표시합니다.'}</p>
-      <Link className="inline-block rounded-xl px-4 py-3 text-sm underline" href="/settings">수집 상태 보기</Link>
-    </Card.Content></Card>
+    {data.traffic && <div className="grid gap-4 xl:grid-cols-[minmax(0,1.65fr)_minmax(270px,.8fr)]">
+      <section className="panel"><div className="section-header"><div><p className="eyebrow">TRAFFIC</p><h2 className="panel-title mt-1">최근 24시간 {scopeLabel} 트래픽</h2></div><span className="pill pill--good">{scopeLabel}</span></div>
+        {data.traffic.scope === 'reported' && <p className="text-sm muted">UniFi가 알려준 트래픽 정보 기준입니다. 인터넷·LAN 포함 범위와 실제 전송량의 오차는 확인하지 않았습니다.</p>}
+        <TrafficChart data={data.traffic} /></section>
+      <section className="panel"><div className="section-header"><div><p className="eyebrow">TOP CLIENTS</p><h2 className="panel-title mt-1">상위 클라이언트</h2></div></div>
+        {data.traffic.topClients.length > 0 ? <ul>{data.traffic.topClients.map((client, index) => <li key={client.id}>
+          <Link href={`/clients/${client.id}`} className="top-client-row"><span className="flex min-w-0 items-center gap-2"><span className="rank">{index + 1}</span><span className="truncate">{client.name ?? client.mac}</span></span><strong className="number shrink-0">{formatUsage(client.totalBytes)}</strong></Link>
+        </li>)}</ul> : <p className="text-sm muted">표시할 클라이언트가 없습니다.</p>}</section>
+    </div>}
+    <section className="panel"><div className="section-header"><div><p className="eyebrow">COLLECTION</p><h2 className="panel-title mt-1">연결 상태</h2></div><span className={`pill ${running ? 'pill--good' : 'pill--warn'}`}>{isError ? '조회 오류' : stale ? '수집 지연' : data.latestRun?.status === 'error' ? '수집 오류' : data.latestRun ? '최근 수집 완료' : '수집 대기'}</span></div>
+      {data.sites.length === 0 ? <p className="text-sm muted">등록된 사이트가 없습니다. UCG 접근 정보를 로컬에 설정하고 PoC를 실행해 원본 필드를 검증하세요.</p> :
+        <p className="text-sm muted">사이트: {data.sites.map(site => site.label).join(', ')}</p>}
+      <p className="mt-2 text-sm muted">{data.hasMeasuredUsage ? '컨트롤러 보고 사용량 기록이 있습니다. 클라이언트 상세에서 기간별 사용량을 확인하세요.' : '첫 사용량 구간이 쌓이면 기간별 결과를 표시합니다.'}</p>
+      <Link className="text-link mt-2" href="/settings">수집 상태 보기 <ArrowUpRight size={15} aria-hidden="true" /></Link>
+    </section>
   </div>;
 }
 

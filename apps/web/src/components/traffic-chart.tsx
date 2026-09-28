@@ -1,6 +1,6 @@
 'use client';
 
-import {CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis} from 'recharts';
+import {CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis} from 'recharts';
 import type {TrafficPoint} from '@/lib/traffic';
 
 export type TrafficData = {
@@ -47,18 +47,17 @@ export function TrafficChart({data}: {data: TrafficData}) {
     ...(data.bucketSeconds <= 300 ? {hour: '2-digit' as const, minute: '2-digit' as const} : {})
   }).format(new Date(value));
   return <div className="mt-4 space-y-4">
-    <div className="grid grid-cols-2 gap-3 text-sm"><p>다운로드 <strong className="number block text-lg">{formatUsage(data.downloadBytes)}</strong></p><p>업로드 <strong className="number block text-lg">{formatUsage(data.uploadBytes)}</strong></p></div>
-    <p className="text-xs muted">{data.bucketSeconds / 60}분 단위 평균 속도(Mbps)입니다. {data.rateBasis === 'observed' ? '실제로 확인된 시간' : '전체 시간'}을 기준으로 계산합니다. 장비가 늦게 알려줄 수 있어 정확한 전송 시각은 추정입니다. 기록이 없는 시간은 확인하지 못했습니다.{data.boundaryEstimated && ' 기간 양끝은 해당 단위에 맞춰 계산한 추정치입니다.'}</p>
+    <div className="chart-stat-grid"><div className="chart-stat"><span className="chart-stat-label">다운로드</span><strong className="number">{formatUsage(data.downloadBytes)}</strong></div><div className="chart-stat chart-stat--upload"><span className="chart-stat-label">업로드</span><strong className="number">{formatUsage(data.uploadBytes)}</strong></div></div>
     <div className="h-72 min-w-0" role="img" aria-label="다운로드와 업로드의 시간별 평균 속도 그래프">
-      <ResponsiveContainer width="100%" height="100%"><LineChart data={chart} margin={{top: 8, right: 14, bottom: 8, left: -10}}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#94a3b866" />
-        <XAxis dataKey="time" type="number" domain={[first, Math.ceil(end / intervalMs) * intervalMs]} tickFormatter={axisTime} tick={{fontSize: 11}} tickCount={5} />
-        <YAxis unit=" Mbps" tick={{fontSize: 11}} width={70} />
-        <Tooltip labelFormatter={label => axisTime(Number(label))} formatter={value => typeof value === 'number' ? `${value.toFixed(2)} Mbps` : '—'} />
-        <Legend />
-        <Line dataKey="download" name="다운로드" stroke="#2563eb" strokeWidth={2} dot={downloadDots ? {r: 4} : false} connectNulls={false} isAnimationActive={false} />
-        <Line dataKey="upload" name="업로드" stroke="#d97706" strokeWidth={2} dot={uploadDots ? {r: 4} : false} connectNulls={false} isAnimationActive={false} />
+      <ResponsiveContainer width="100%" height="100%"><LineChart data={chart} margin={{top: 12, right: 6, bottom: 8, left: -12}}>
+        <CartesianGrid strokeDasharray="4 5" stroke="var(--line)" vertical={false} />
+        <XAxis dataKey="time" type="number" domain={[first, Math.ceil(end / intervalMs) * intervalMs]} tickFormatter={axisTime} tick={{fontSize: 11, fill: 'var(--subtle)'}} tickLine={false} axisLine={false} tickCount={5} />
+        <YAxis unit=" Mbps" tick={{fontSize: 11, fill: 'var(--subtle)'}} tickLine={false} axisLine={false} width={70} />
+        <Tooltip labelFormatter={label => axisTime(Number(label))} formatter={value => typeof value === 'number' ? `${value.toFixed(2)} Mbps` : '—'} contentStyle={{background: 'var(--surface)', color: 'var(--ink)', border: '1px solid var(--line)', borderRadius: 12}} />
+        <Line dataKey="download" name="다운로드" stroke="var(--blue)" strokeWidth={2.5} dot={downloadDots ? {r: 4} : false} connectNulls={false} isAnimationActive={false} />
+        <Line dataKey="upload" name="업로드" stroke="var(--orange)" strokeWidth={2.5} dot={uploadDots ? {r: 4} : false} connectNulls={false} isAnimationActive={false} />
       </LineChart></ResponsiveContainer>
     </div>
+    <p className="text-xs muted">{data.bucketSeconds / 60}분 단위 평균 속도(Mbps)입니다. {data.rateBasis === 'observed' ? '실제로 확인된 시간' : '전체 시간'}을 기준으로 계산합니다. 장비가 늦게 알려줄 수 있어 정확한 전송 시각은 추정입니다. 기록이 없는 시간은 확인하지 못했습니다.{data.boundaryEstimated && ' 기간 양끝은 해당 단위에 맞춰 계산한 추정치입니다.'}</p>
   </div>;
 }

@@ -37,18 +37,18 @@ export function RetentionSettings({initial}: {initial: Retention}) {
       setMessage({error: true, text: '설정을 저장하지 못했습니다. 다시 시도하세요.'});
     } finally { setSaving(false); }
   }
-  return <section className="panel"><h2 className="font-semibold">보존 설정</h2>
+  return <section className="panel"><p className="eyebrow">RETENTION</p><h2 className="panel-title mt-1">보존 설정</h2>
     <p className="mt-2 text-sm muted">표시 시간대 Asia/Seoul · 롤업으로 합계를 보존한 뒤 오래된 상세 기록을 정리합니다.</p>
     <form onSubmit={event => void save(event)} className="mt-4 space-y-4">
-      <div className="grid gap-3 sm:grid-cols-3">{fields.map(field => <label key={field.key} className="text-sm">
+      <div className="grid gap-3 sm:grid-cols-3">{fields.map(field => <label key={field.key} className="input-label">
         {field.label} (일)
         <input type="number" required min={1} max={field.max} step={1} value={values[field.key]}
           onChange={event => {setValues(previous => ({...previous, [field.key]: Number(event.target.value)})); setMessage(null);}}
-          className="mt-1 min-h-11 w-full rounded-xl border border-black/20 bg-transparent px-4 dark:border-white/20" />
+          className="input-field" />
       </label>)}</div>
       <p className="text-xs muted">원본·상세 구간 ≤ 5분 집계 ≤ 시간 집계 순서로 설정하세요.</p>
       {message && <p role={message.error ? 'alert' : 'status'} className="text-sm">{message.text}</p>}
-      <Button type="submit" isDisabled={saving}>{saving ? '저장 중…' : '설정 저장'}</Button>
+      <Button type="submit" isDisabled={saving} className="primary-button min-h-11 px-6">{saving ? '저장 중…' : '설정 저장'}</Button>
     </form>
   </section>;
 }
