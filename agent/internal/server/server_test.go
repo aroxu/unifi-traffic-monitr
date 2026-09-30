@@ -18,7 +18,7 @@ import (
 
 const token = "0123456789abcdef0123456789abcdef"
 
-func setup(t *testing.T) (*httptest.Server, *Hub, *store.Store) {
+func setup(t *testing.T) (*httptest.Server, *Hub, *store.Store, context.CancelFunc) {
 	st, err := store.Open(t.TempDir(), 7*24*time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -28,7 +28,7 @@ func setup(t *testing.T) (*httptest.Server, *Hub, *store.Store) {
 	t.Cleanup(cancel)
 	srv := httptest.NewTLSServer(New(ctx, token, st, hub, Info{AgentID: "test", Version: "dev"}).Handler())
 	t.Cleanup(srv.Close)
-	return srv, hub, st
+	return srv, hub, st, cancel
 }
 
 func dial(t *testing.T, srv *httptest.Server, auth string) (*websocket.Conn, *http.Response, error) {
@@ -55,7 +55,7 @@ func read(t *testing.T, c *websocket.Conn) map[string]any {
 }
 
 func TestAuthenticationAndRateLimit(t *testing.T) {
-	srv, _, _ := setup(t)
+	srv, _, _, _ := setup(t)
 	for i := 0; i < failureLimit; i++ {
 		_, resp, err := dial(t, srv, "Bearer wrong")
 		if err == nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
@@ -69,7 +69,7 @@ func TestAuthenticationAndRateLimit(t *testing.T) {
 }
 
 func TestReplayThenLiveOrder(t *testing.T) {
-	srv, hub, st := setup(t)
+	srv, hub, st, stop := setup(t)
 	start := time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)
 	for i := 0; i < 3; i++ {
 		b := protocol.Bucket{Start: start.Add(time.Duration(i) * 5 * time.Minute), Final: true, CoverageSeconds: 300}
@@ -111,5 +111,13 @@ func TestReplayThenLiveOrder(t *testing.T) {
 	hub.Broadcast([]byte(`{"type":"live","subjects":[]}`))
 	if live := read(t, c); live["type"] != "live" {
 		t.Fatalf("unexpected live message %v", live)
+	}
+	// Stopping the agent must send a close frame, not drop the connection.
+	stop()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _, err = c.Read(ctx)
+	if status := websocket.CloseStatus(err); status != websocket.StatusGoingAway {
+		t.Fatalf("expected going-away close, got %v (%v)", status, err)
 	}
 }

@@ -296,16 +296,19 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 	s.hub.signalReady()
 
-	ctx = conn.CloseRead(ctx)
+	// CloseRead drops the TCP connection without a close frame when its
+	// context ends, so give it one that ends only when the peer goes away.
+	// Agent shutdown is handled below with a proper close frame.
+	peer := conn.CloseRead(context.Background())
 	go func() {
 		ticker := time.NewTicker(pingInterval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-peer.Done():
 				return
 			case <-ticker.C:
-				pctx, pcancel := context.WithTimeout(ctx, pingTimeout)
+				pctx, pcancel := context.WithTimeout(peer, pingTimeout)
 				err := conn.Ping(pctx)
 				pcancel()
 				if err != nil {
@@ -317,14 +320,16 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-s.base.Done():
 			conn.Close(websocket.StatusGoingAway, "agent stopping")
+			return
+		case <-peer.Done():
 			return
 		case <-c.done:
 			conn.Close(websocket.StatusTryAgainLater, "consumer too slow or unresponsive")
 			return
 		case msg := <-c.send:
-			if err := writeRaw(ctx, conn, msg); err != nil {
+			if err := writeRaw(peer, conn, msg); err != nil {
 				return
 			}
 		}
