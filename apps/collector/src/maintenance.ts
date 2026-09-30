@@ -39,7 +39,7 @@ export async function pruneRawSamples(client: PoolClient, siteId: string, now = 
 
 /** Rollups are committed before any detailed interval can be removed. */
 export async function pruneExpiredHistory(client: PoolClient, siteId: string, now = new Date()): Promise<{
-  intervals: number; samples: number; rollups: number
+  intervals: number; samples: number; rollups: number; agentBuckets: number
 }> {
   const days = await retentionDays(client);
   const rawCutoff = new Date(now.getTime() - days.raw_retention_days * 86400000);
@@ -56,5 +56,8 @@ export async function pruneExpiredHistory(client: PoolClient, siteId: string, no
     ORDER BY bucket_start LIMIT 10000
   ) DELETE FROM traffic_rollups r USING stale WHERE r.id=stale.id RETURNING r.id`,
     [siteId, fiveCutoff, hourCutoff]);
-  return {intervals, samples, rollups};
+  const agentBuckets = await deleteBatches(client, `WITH stale AS (
+    SELECT id FROM agent_buckets WHERE site_id=$1 AND bucket_start < $2 ORDER BY bucket_start LIMIT 10000
+  ) DELETE FROM agent_buckets b USING stale WHERE b.id=stale.id RETURNING b.id`, [siteId, fiveCutoff]);
+  return {intervals, samples, rollups, agentBuckets};
 }

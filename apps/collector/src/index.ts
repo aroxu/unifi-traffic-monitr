@@ -6,6 +6,8 @@ import {pruneExpiredHistory} from './maintenance';
 import {parseCounterMappings} from './mapping';
 import {backfillPendingRollups} from './rollups';
 import {saveCycle} from './storage';
+import {AgentSession, agentConfigFromEnv} from './agent';
+import {resolveAgentClients} from './agent-ingest';
 
 const siteUuid = process.env.UNIFI_SITE_UUID ?? '';
 const internalName = process.env.UNIFI_SITE ?? 'default';
@@ -15,9 +17,15 @@ if (!Number.isSafeInteger(intervalMs) || intervalMs < 10000 || intervalMs > 3600
 const maxGapMs = Math.max(600000, intervalMs * 10);
 const unifi = new UnifiClient(unifiConfigFromEnv());
 const counterMappings = parseCounterMappings(process.env);
+const agentConfig = agentConfigFromEnv(process.env);
+// The agent owns measured internet and LAN usage; API counters must not write the same rollups.
+if (agentConfig && [counterMappings.wired, counterMappings.wireless].some(m => m?.scope === 'internet' || m?.scope === 'lan')) {
+  throw new Error('API counter mappings cannot use the internet or lan scope while UNIFI_AGENT_URL is set');
+}
 let stopping = false;
 let lastMaintenanceAt = 0;
-const stop = () => { stopping = true; };
+const agentAbort = new AbortController();
+const stop = () => { stopping = true; agentAbort.abort(); };
 process.on('SIGTERM', stop);
 process.on('SIGINT', stop);
 
@@ -36,6 +44,17 @@ async function recordError(client: PoolClient, dbSiteId: string, startedAt: Date
 }
 
 
+async function ensureSite(client: PoolClient): Promise<string> {
+  const site = await client.query<{id: string}>(`INSERT INTO sites (unifi_id, internal_name, label) VALUES ($1,$2,$3)
+    ON CONFLICT (unifi_id) DO UPDATE SET internal_name=EXCLUDED.internal_name RETURNING id`, [siteUuid, internalName, internalName]);
+  return site.rows[0].id;
+}
+
+async function fiveMinuteCutoff(client: PoolClient): Promise<Date> {
+  const result = await client.query<{days: number}>('SELECT five_minute_retention_days AS days FROM settings WHERE id=1');
+  return new Date(Date.now() - (result.rows[0]?.days ?? 90) * 86400000);
+}
+
 async function cycle(): Promise<void> {
   const client = await getPool().connect();
   let locked = false;
@@ -44,9 +63,7 @@ async function cycle(): Promise<void> {
     const lock = await client.query<{ok: boolean}>('SELECT pg_try_advisory_lock(hashtext($1), hashtext($2)) AS ok', ['unifi-traffic-monitor', siteUuid]);
     locked = lock.rows[0]?.ok ?? false;
     if (!locked) return;
-    const site = await client.query<{id: string}>(`INSERT INTO sites (unifi_id, internal_name, label) VALUES ($1,$2,$3)
-      ON CONFLICT (unifi_id) DO UPDATE SET internal_name=EXCLUDED.internal_name RETURNING id`, [siteUuid, internalName, internalName]);
-    const dbSiteId = site.rows[0].id;
+    const dbSiteId = await ensureSite(client);
     let snapshots: ClientSnapshot[];
     let connected: ConnectedClientSnapshot[];
     let devices: DeviceSnapshot[];
@@ -68,6 +85,12 @@ async function cycle(): Promise<void> {
     }
     const rawCount = await saveCycle(client, dbSiteId, startedAt, snapshots, connected, devices, counterMappings, maxGapMs);
     console.log(`Collection succeeded: ${snapshots.length} clients, ${connected.length} connected, ${devices.length} devices, ${rawCount} raw counters`);
+    if (agentConfig) {
+      try {
+        const resolved = await resolveAgentClients(client, dbSiteId, await fiveMinuteCutoff(client));
+        if (resolved) console.log(`Attached gateway agent usage from ${resolved} buckets to newly listed clients`);
+      } catch { console.error('Gateway agent client matching failed; will retry next cycle'); }
+    }
     try {
       const backfilled = await backfillPendingRollups(client, dbSiteId);
       if (backfilled) console.log(`Backfilled ${backfilled} earlier traffic observations`);
@@ -76,7 +99,9 @@ async function cycle(): Promise<void> {
       try {
         const removed = await pruneExpiredHistory(client, dbSiteId);
         lastMaintenanceAt = Date.now();
-        if (removed.intervals || removed.samples || removed.rollups) console.log(`Pruned ${removed.intervals} intervals, ${removed.samples} samples, ${removed.rollups} rollups`);
+        if (removed.intervals || removed.samples || removed.rollups || removed.agentBuckets) {
+          console.log(`Pruned ${removed.intervals} intervals, ${removed.samples} samples, ${removed.rollups} rollups, ${removed.agentBuckets} agent buckets`);
+        }
       } catch { console.error('History retention failed; will retry next cycle'); }
     }
   } finally {
@@ -87,6 +112,9 @@ async function cycle(): Promise<void> {
 
 async function main(): Promise<void> {
   let failures = 0;
+  const agentTask = agentConfig ? new AgentSession(agentConfig, getPool(), ensureSite).run(agentAbort.signal)
+    .catch(() => console.error('Gateway agent session stopped unexpectedly')) : Promise.resolve();
+  if (agentConfig) console.log(`Gateway agent stream enabled at ${agentConfig.url.host}`);
   try {
     while (!stopping) {
       try { await cycle(); failures = 0; }
@@ -101,6 +129,8 @@ async function main(): Promise<void> {
       });
     }
   } finally {
+    agentAbort.abort();
+    await agentTask;
     await unifi.close();
     await getPool().end();
   }

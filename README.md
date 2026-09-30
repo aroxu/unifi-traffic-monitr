@@ -1,6 +1,6 @@
 # UniFi Traffic Monitor
 
-구현 중인 UniFi 클라이언트 트래픽 모니터입니다. 현재 **실장비 PoC, 관리자 로그인, PostgreSQL, 클라이언트·장비 동기화, 원본 카운터/체크포인트 수집**이 동작합니다. `reported` 범위는 UniFi API 원본 카운터의 정상 차분을 기간별로 표시합니다. 인터넷/LAN 포함 범위와 실제 전송량 대비 오차는 확인되지 않았으므로 인터넷 전용 사용량으로 해석하지 않습니다. 실장비 확인 결과는 [POC_RESULTS.md](POC_RESULTS.md)에 기록합니다.
+구현 중인 UniFi 클라이언트 트래픽 모니터입니다. 현재 **실장비 PoC, 관리자 로그인, PostgreSQL, 클라이언트·장비 동기화, 원본 카운터/체크포인트 수집, 게이트웨이 에이전트의 직접 측정과 실시간 화면**이 동작합니다. `reported` 범위는 UniFi API 원본 카운터의 정상 차분을 기간별로 표시합니다. 이 값은 인터넷/LAN 포함 범위와 실제 전송량 대비 오차가 확인되지 않았으므로 인터넷 전용 사용량으로 해석하지 않습니다. 게이트웨이 에이전트를 설치하면 UCG가 직접 센 `internet`·`lan` 사용량과 1초 단위 실시간 속도를 표시합니다. 실장비 확인 결과는 [POC_RESULTS.md](POC_RESULTS.md)에 기록합니다.
 
 ## 준비
 
@@ -102,6 +102,18 @@ Compose의 첫 실행은 `.env`의 `ADMIN_EMAIL`과 `ADMIN_PASSWORD`로 빈 DB�
 ## 화면 자동 갱신
 
 대시보드에 로그인한 동안 웹은 인증된 `/api/overview/events` 연결로 PostgreSQL 수집 완료 신호를 받습니다. 새 수집 결과가 DB에 커밋되면 개요·목록·상세·장비·상태 화면이 최신 DB 값을 다시 읽습니다. 브라우저 탭을 숨기면 연결을 닫고 다시 볼 때 재연결하며, 연결할 수 없으면 주기적 조회를 사용합니다. 이것은 수집 주기마다 화면을 갱신하는 기능이며 장비에서 실시간 패킷을 직접 측정하는 기능은 아닙니다. 역방향 프록시를 사용한다면 이 경로의 스트리밍 응답 버퍼링을 끄세요. 웹은 `X-Accel-Buffering: no` 헤더를 보냅니다.
+
+게이트웨이 에이전트가 연결되어 있으면 같은 연결로 1초마다 실시간 속도도 받습니다. 수집기가 에이전트에서 받은 값을 PostgreSQL `utm_live` 알림으로 전달하고, 개요와 클라이언트 상세가 최근 1분 속도를 표시합니다.
+
+## 게이트웨이 에이전트
+
+[agent/](agent/README.md)는 UCG에 설치하는 Go 프로그램입니다. conntrack 카운터로 클라이언트별 인터넷·LAN 트래픽을 세고, 수집기가 WebSocket(WSS)으로 연결하면 실시간 데이터를 보냅니다. 연결이 없는 동안에는 5분 기록을 게이트웨이의 `/data`에 7일까지 보관합니다. 수집기가 다시 연결하면 빠진 구간을 채웁니다. 설치 파일과 설정도 `/data`에 두므로 재부팅과 펌웨어 업데이트 후에도 유지됩니다.
+
+UCG에서 설치 스크립트를 실행한 뒤, 출력된 값을 수집기의 `UNIFI_AGENT_URL`, `UNIFI_AGENT_TOKEN`, `UNIFI_AGENT_CERT_SHA256`에 넣습니다. 측정 범위, 관리 명령, 프로토콜은 [agent/README.md](agent/README.md)에 정리했습니다.
+
+```sh
+curl -sSLf https://raw.githubusercontent.com/aroxu/unifi-traffic-monitr/main/agent/install.sh | sh
+```
 
 ## 백업과 복원
 

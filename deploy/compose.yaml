@@ -69,7 +69,10 @@ services:
   collector:
     profiles: ["collector"]
     image: ${UTM_IMAGE:-unifi-traffic-monitor:local}
-    command: ["pnpm", "--filter", "@utm/collector", "start"]
+    # Run node directly so SIGTERM reaches the collector and it can close the
+    # agent stream and record the disconnect before exiting.
+    working_dir: /app/apps/collector
+    command: ["node", "--import", "tsx", "src/index.ts"]
     stop_grace_period: 60s
     environment:
       DB_HOST: db
@@ -89,6 +92,9 @@ services:
       UNIFI_WIRELESS_RX_DIRECTION: ${UNIFI_WIRELESS_RX_DIRECTION:-}
       NODE_EXTRA_CA_CERTS: ${UNIFI_CA_FILE:-}
       COLLECT_INTERVAL_MS: ${COLLECT_INTERVAL_MS:-30000}
+      UNIFI_AGENT_URL: ${UNIFI_AGENT_URL:-}
+      UNIFI_AGENT_TOKEN: ${UNIFI_AGENT_TOKEN:-}
+      UNIFI_AGENT_CERT_SHA256: ${UNIFI_AGENT_CERT_SHA256:-}
     depends_on:
       bootstrap-admin:
         condition: service_completed_successfully

@@ -1,0 +1,30 @@
+[Unit]
+Description=UniFi traffic monitor agent
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/data/unifi-traffic-agent
+# Keep retrying after crashes or boot-time failures.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+EnvironmentFile=/data/unifi-traffic-agent/agent.env
+Environment=GOMEMLIMIT=64MiB
+ExecStart=/data/unifi-traffic-agent/bin/unifi-traffic-agent run -data-dir /data/unifi-traffic-agent
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+Nice=10
+CPUQuota=50%
+MemoryMax=128M
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/data/unifi-traffic-agent
+CapabilityBoundingSet=CAP_NET_ADMIN
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

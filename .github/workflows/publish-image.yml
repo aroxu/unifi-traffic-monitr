@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+    # The gateway agent is released separately (release-agent.yml).
+    paths-ignore: ['agent/**', '.github/workflows/release-agent.yml']
   workflow_dispatch:
 
 permissions:

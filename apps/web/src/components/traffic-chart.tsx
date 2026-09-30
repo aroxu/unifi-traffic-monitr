@@ -2,6 +2,9 @@
 
 import {CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis} from 'recharts';
 import type {TrafficPoint} from '@/lib/traffic';
+import {formatUsage} from '@/lib/format';
+
+export {formatUsage};
 
 export type TrafficData = {
   start: string; end: string; bucketSeconds: number;
@@ -10,20 +13,7 @@ export type TrafficData = {
   uploadBytes: string | null; downloadBytes: string | null; points: TrafficPoint[];
 };
 
-export function formatUsage(bytes: string | null): string {
-  if (bytes === null) return '측정 없음';
-  const value = BigInt(bytes);
-  if (value === 0n) return '0 B';
-  if (value < 1_000n) return `${value} B`;
-  const unit = value >= 1_000_000_000n ? ['GB', 1_000_000_000n]
-    : value >= 1_000_000n ? ['MB', 1_000_000n] : ['KB', 1_000n];
-  const [label, divisor] = unit as [string, bigint];
-  const whole = value / divisor;
-  const fraction = (value % divisor) * 100n / divisor;
-  return `${whole}.${fraction.toString().padStart(2, '0')} ${label}`;
-}
-
-export function TrafficChart({data}: {data: TrafficData}) {
+export function TrafficChart({data, gatewayMeasured = false}: {data: TrafficData; gatewayMeasured?: boolean}) {
   if (!data.points.some(point => point.uploadBytes !== null || point.downloadBytes !== null)) {
     return <p className="mt-4 text-sm muted">선택한 기간에 기록된 트래픽 구간이 없습니다.</p>;
   }
@@ -58,6 +48,6 @@ export function TrafficChart({data}: {data: TrafficData}) {
         <Line dataKey="upload" name="업로드" stroke="var(--orange)" strokeWidth={2.5} dot={uploadDots ? {r: 4} : false} connectNulls={false} isAnimationActive={false} />
       </LineChart></ResponsiveContainer>
     </div>
-    <p className="text-xs muted">{data.bucketSeconds / 60}분 단위 평균 속도(Mbps)입니다. {data.rateBasis === 'observed' ? '실제로 확인된 시간' : '전체 시간'}을 기준으로 계산합니다. 장비가 늦게 알려줄 수 있어 정확한 전송 시각은 추정입니다. 기록이 없는 시간은 확인하지 못했습니다.{data.boundaryEstimated && ' 기간 양끝은 해당 단위에 맞춰 계산한 추정치입니다.'}</p>
+    <p className="text-xs muted">{data.bucketSeconds / 60}분 단위 평균 속도(Mbps)입니다. {data.rateBasis === 'observed' ? '실제로 확인된 시간' : '전체 시간'}을 기준으로 계산합니다. {gatewayMeasured ? '게이트웨이가 1~10초마다 센 값을 5분 단위로 모았습니다.' : '장비가 늦게 알려줄 수 있어 정확한 전송 시각은 추정입니다.'} 기록이 없는 시간은 확인하지 못했습니다.{data.boundaryEstimated && ' 기간 양끝은 해당 단위에 맞춰 계산한 추정치입니다.'}</p>
   </div>;
 }

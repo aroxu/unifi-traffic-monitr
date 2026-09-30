@@ -15,21 +15,29 @@ export async function getOverview() {
       db.select({known: sql<number>`count(${clients.online})::int`, online: sql<number>`count(*) filter (where ${clients.online} = true)::int`, offline: sql<number>`count(*) filter (where ${clients.online} = false)::int`}).from(clients),
       db.select().from(collectorRuns).orderBy(desc(collectorRuns.startedAt)).limit(1)
     ]);
-    const [measured, traffic] = siteRows[0] ? await Promise.all([
+    const [measured, traffic, agentRows, labelRows] = siteRows[0] ? await Promise.all([
       client.query<{present: boolean}>(`SELECT EXISTS (SELECT 1 FROM traffic_rollups
         WHERE site_id=$1 AND observed_seconds>0 LIMIT 1) AS present`, [siteRows[0].id]),
-      getOverviewTraffic(new Date(end.getTime() - 86400000), end, siteRows[0].id, client)
-    ]) : [null, null];
+      getOverviewTraffic(new Date(end.getTime() - 86400000), end, siteRows[0].id, client),
+      client.query<{connected: boolean; agent_version: string | null; last_frame_at: Date | null; last_error: string | null}>(
+        `SELECT connected AND last_frame_at > now() - interval '60 seconds' AS connected, agent_version, last_frame_at, last_error
+          FROM agent_status WHERE site_id=$1`, [siteRows[0].id]),
+      client.query<{id: string; label: string}>('SELECT id, COALESCE(name, mac) AS label FROM clients WHERE site_id=$1', [siteRows[0].id])
+    ]) : [null, null, null, null];
     const rawSamples = latestRun[0] && latestRun[0].status !== 'error'
       ? await db.select({count: sql<number>`count(*)::int`,
         clients: sql<number>`count(distinct ${clientSamples.clientId})::int`})
         .from(clientSamples).where(eq(clientSamples.runId, latestRun[0].id)) : [];
     await client.query('COMMIT');
+    const agentRow = agentRows?.rows[0];
     return {sites: siteRows, clientCount: clientCount[0]?.count ?? 0, onlineCount: onlineStatus[0]?.known ? onlineStatus[0].online : null,
       offlineCount: onlineStatus[0]?.known ? onlineStatus[0].offline : null,
       latestRun: latestRun[0] ?? null, rawCounterCount: latestRun[0] && latestRun[0].status !== 'error' ? rawSamples[0]?.count ?? 0 : null,
       counterClientCount: latestRun[0] && latestRun[0].status !== 'error' ? rawSamples[0]?.clients ?? 0 : null,
-      hasMeasuredUsage: measured?.rows[0]?.present ?? false, traffic};
+      hasMeasuredUsage: measured?.rows[0]?.present ?? false, traffic,
+      agent: agentRow ? {connected: agentRow.connected, version: agentRow.agent_version, lastFrameAt: agentRow.last_frame_at,
+        lastError: agentRow.last_error} : null,
+      clientLabels: Object.fromEntries((labelRows?.rows ?? []).map(row => [row.id, row.label]))};
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     throw error;
@@ -79,3 +87,27 @@ export async function getDeviceClientCounts() {
     .where(eq(clients.online, true)).groupBy(clients.deviceId);
 }
 export async function getLatestRuns() { return getDb().select().from(collectorRuns).orderBy(desc(collectorRuns.startedAt)).limit(10); }
+
+export type AgentStatus = {connected: boolean; agentVersion: string | null; connectedAt: Date | null; disconnectedAt: Date | null;
+  lastFrameAt: Date | null; lastFinalBucket: Date | null; earliestAvailable: Date | null; lastError: string | null};
+
+/** Gateway agent state for the newest site, or null when no agent was ever configured. */
+export async function getAgentStatus(): Promise<AgentStatus | null> {
+  const result = await getPool().query<{connected: boolean; agent_version: string | null; connected_at: Date | null;
+    disconnected_at: Date | null; last_frame_at: Date | null; last_final_bucket: Date | null; earliest_available: Date | null;
+    last_error: string | null}>(`SELECT a.connected AND a.last_frame_at > now() - interval '60 seconds' AS connected,
+      a.agent_version, a.connected_at, a.disconnected_at, a.last_frame_at, a.last_final_bucket, a.earliest_available, a.last_error
+    FROM agent_status a JOIN sites s ON s.id=a.site_id ORDER BY s.created_at DESC LIMIT 1`);
+  const row = result.rows[0];
+  return row ? {connected: row.connected, agentVersion: row.agent_version, connectedAt: row.connected_at,
+    disconnectedAt: row.disconnected_at, lastFrameAt: row.last_frame_at, lastFinalBucket: row.last_final_bucket,
+    earliestAvailable: row.earliest_available, lastError: row.last_error} : null;
+}
+
+/** Traffic from client addresses whose MAC the gateway did not know, last 24 hours. */
+export async function getAgentUnattributed(): Promise<{upload: string; download: string}> {
+  const result = await getPool().query<{upload: string | null; download: string | null}>(`SELECT
+      sum(bytes) FILTER (WHERE direction='upload')::text AS upload, sum(bytes) FILTER (WHERE direction='download')::text AS download
+    FROM agent_buckets WHERE subject='unattributed' AND bucket_start >= now() - interval '24 hours'`);
+  return {upload: result.rows[0]?.upload ?? '0', download: result.rows[0]?.download ?? '0'};
+}

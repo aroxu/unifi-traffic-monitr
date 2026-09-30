@@ -19,6 +19,7 @@ export async function GET(request: Request) {
   try {
     await client.connect();
     await client.query('LISTEN utm_collection');
+    await client.query('LISTEN utm_live');
   } catch {
     activeStreams--;
     await client.end().catch(() => {});
@@ -36,7 +37,11 @@ export async function GET(request: Request) {
         try { controller.enqueue(encoder.encode(message)); }
         catch { close(); }
       };
-      const onNotification = () => send('event: refresh\ndata: changed\n\n');
+      const onNotification = (message: {channel: string; payload?: string}) => {
+        if (message.channel !== 'utm_live') { send('event: refresh\ndata: changed\n\n'); return; }
+        // The collector sends single-line JSON; anything else would break SSE framing.
+        if (message.payload && !/[\r\n]/.test(message.payload)) send(`event: live\ndata: ${message.payload}\n\n`);
+      };
       const onError = () => close();
       const onAbort = () => close();
       const heartbeat = setInterval(() => send(': keepalive\n\n'), 20000);

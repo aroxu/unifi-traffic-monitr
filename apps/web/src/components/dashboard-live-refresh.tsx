@@ -2,6 +2,7 @@
 
 import {useEffect, useRef, useState} from 'react';
 import {usePathname, useRouter} from 'next/navigation';
+import {checkLiveStale, pushLive} from '@/lib/live-store';
 
 export function DashboardLiveRefresh() {
   const router = useRouter();
@@ -23,6 +24,7 @@ export function DashboardLiveRefresh() {
       source = new EventSource('/api/overview/events');
       source.addEventListener('ready', () => { ready = true; setConnected(true); refresh(); });
       source.addEventListener('refresh', refresh);
+      source.addEventListener('live', event => pushLive((event as MessageEvent<string>).data));
       source.onerror = () => { ready = false; setConnected(false); };
     };
     const visibility = () => {
@@ -32,8 +34,10 @@ export function DashboardLiveRefresh() {
     document.addEventListener('visibilitychange', visibility);
     open();
     const fallback = setInterval(() => { if (!ready) refresh(); }, 15000);
+    const staleCheck = setInterval(() => checkLiveStale(), 1000);
     return () => {
       clearInterval(fallback);
+      clearInterval(staleCheck);
       document.removeEventListener('visibilitychange', visibility);
       source?.close();
     };

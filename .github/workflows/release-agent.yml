@@ -1,0 +1,34 @@
+name: Release gateway agent
+
+on:
+  push:
+    tags: ['agent-v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+      - name: Test
+        working-directory: agent
+        run: |
+          go vet ./...
+          go test ./...
+      - name: Build packages
+        working-directory: agent
+        run: bash build/build.sh "${GITHUB_REF_NAME#agent-}" dist
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#agent-}"
+          gh release create "$GITHUB_REF_NAME" agent/dist/* --verify-tag --latest \
+            --title "Gateway agent $version" \
+            --notes "Install on the UniFi gateway as root: curl -sSLf https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/agent/install.sh | sh -s -- $version"

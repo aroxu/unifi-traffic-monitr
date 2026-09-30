@@ -1,0 +1,111 @@
+import type {PoolClient} from 'pg';
+import {UNATTRIBUTED, type AgentBucket} from './agent-protocol';
+
+const scopes = ['internet', 'lan'] as const;
+
+/** Rebuild agent-owned rollups for the given buckets. Both resolutions are replaced, never added. */
+async function applyRollups(client: PoolClient, siteId: string, starts: Date[]): Promise<void> {
+  if (!starts.length) return;
+  const unique = [...new Set(starts.map(d => d.getTime()))].map(ms => new Date(ms));
+  await client.query(`INSERT INTO traffic_rollups
+      (site_id,client_id,scope,direction,resolution,bucket_start,bytes,observed_seconds,gap_count,reset_count,estimated)
+    SELECT site_id, client_id, scope, direction, '5m', bucket_start, bytes, coverage_seconds,
+      CASE WHEN final AND coverage_seconds < 300 THEN 1 ELSE 0 END, 0, false
+    FROM agent_buckets WHERE site_id=$1 AND client_id IS NOT NULL AND bucket_start = ANY($2::timestamptz[])
+    ON CONFLICT (client_id,scope,direction,resolution,bucket_start) DO UPDATE SET
+      bytes=EXCLUDED.bytes, observed_seconds=EXCLUDED.observed_seconds, gap_count=EXCLUDED.gap_count,
+      reset_count=0, estimated=false`, [siteId, unique]);
+  // Recompute only the client hours these buckets touched.
+  await client.query(`INSERT INTO traffic_rollups
+      (site_id,client_id,scope,direction,resolution,bucket_start,bytes,observed_seconds,gap_count,reset_count,estimated)
+    WITH touched AS (
+      SELECT DISTINCT client_id, to_timestamp(floor(extract(epoch FROM bucket_start) / 3600) * 3600) AS hour
+      FROM agent_buckets WHERE site_id=$1 AND client_id IS NOT NULL AND bucket_start = ANY($2::timestamptz[]))
+    SELECT $1, r.client_id, r.scope, r.direction, '1h', t.hour, sum(r.bytes)::bigint,
+      LEAST(3600, sum(r.observed_seconds))::int, sum(r.gap_count)::int, 0, false
+    FROM touched t
+    JOIN traffic_rollups r ON r.client_id=t.client_id AND r.resolution='5m' AND r.scope IN ('internet','lan')
+      AND r.bucket_start >= t.hour AND r.bucket_start < t.hour + interval '1 hour'
+    GROUP BY r.client_id, r.scope, r.direction, t.hour
+    ON CONFLICT (client_id,scope,direction,resolution,bucket_start) DO UPDATE SET
+      bytes=EXCLUDED.bytes, observed_seconds=EXCLUDED.observed_seconds, gap_count=EXCLUDED.gap_count,
+      reset_count=0, estimated=false`, [siteId, unique]);
+}
+
+/**
+ * Store agent buckets and derive rollups in one transaction. A later message
+ * for the same bucket replaces the earlier values; a partial update never
+ * overwrites a final one.
+ */
+export async function ingestAgentBuckets(client: PoolClient, siteId: string, buckets: AgentBucket[]): Promise<{rows: number; lastFinal: Date | null}> {
+  const subject: string[] = [], start: Date[] = [], scope: string[] = [], direction: string[] = [];
+  const bytes: string[] = [], coverage: number[] = [], final: boolean[] = [];
+  let lastFinal: Date | null = null;
+  for (const bucket of buckets) {
+    if (bucket.final && (!lastFinal || bucket.start > lastFinal)) lastFinal = bucket.start;
+    for (const s of bucket.subjects) {
+      for (const name of scopes) {
+        for (const [dir, value] of [['upload', s[name].up], ['download', s[name].down]] as const) {
+          subject.push(s.mac); start.push(bucket.start); scope.push(name); direction.push(dir);
+          bytes.push(value.toString()); coverage.push(bucket.coverageSeconds); final.push(bucket.final);
+        }
+      }
+    }
+  }
+  await client.query('BEGIN');
+  try {
+    if (subject.length) {
+      await client.query(`INSERT INTO agent_buckets
+          (site_id,subject,bucket_start,scope,direction,bytes,coverage_seconds,final,client_id,received_at)
+        SELECT $1, v.subject, v.bucket_start, v.scope, v.direction, v.bytes, v.coverage, v.final,
+          (SELECT c.id FROM clients c WHERE c.site_id=$1 AND c.mac=v.subject), now()
+        FROM unnest($2::text[],$3::timestamptz[],$4::text[],$5::text[],$6::bigint[],$7::int[],$8::bool[])
+          AS v(subject,bucket_start,scope,direction,bytes,coverage,final)
+        ON CONFLICT (site_id,subject,bucket_start,scope,direction) DO UPDATE SET
+          bytes=EXCLUDED.bytes, coverage_seconds=EXCLUDED.coverage_seconds, final=EXCLUDED.final,
+          client_id=COALESCE(agent_buckets.client_id, EXCLUDED.client_id), received_at=now()
+        WHERE EXCLUDED.final OR NOT agent_buckets.final`,
+        [siteId, subject, start, scope, direction, bytes, coverage, final]);
+      await applyRollups(client, siteId, buckets.map(b => b.start));
+    }
+    if (lastFinal) await client.query(`INSERT INTO agent_status (site_id,last_final_bucket,updated_at) VALUES ($1,$2,now())
+      ON CONFLICT (site_id) DO UPDATE SET last_final_bucket=GREATEST(agent_status.last_final_bucket, EXCLUDED.last_final_bucket),
+      updated_at=now()`, [siteId, lastFinal]);
+    await client.query('COMMIT');
+    return {rows: subject.length, lastFinal};
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  }
+}
+
+/**
+ * Attach buckets to clients that the API listed after the agent reported them.
+ * since is rounded up to an hour so a partly pruned hour is never rebuilt.
+ */
+export async function resolveAgentClients(client: PoolClient, siteId: string, since: Date): Promise<number> {
+  const hourStart = new Date(Math.ceil(since.getTime() / 3600000) * 3600000);
+  await client.query('BEGIN');
+  try {
+    const resolved = await client.query<{bucket_start: Date}>(`WITH updated AS (
+        UPDATE agent_buckets b SET client_id=c.id FROM clients c
+        WHERE b.site_id=$1 AND b.client_id IS NULL AND b.subject <> $2 AND b.bucket_start >= $3
+          AND c.site_id=b.site_id AND c.mac=b.subject
+        RETURNING b.bucket_start)
+      SELECT DISTINCT bucket_start FROM updated`, [siteId, UNATTRIBUTED, hourStart]);
+    await applyRollups(client, siteId, resolved.rows.map(row => row.bucket_start));
+    await client.query('COMMIT');
+    return resolved.rows.length;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  }
+}
+
+/** The newest final bucket this database has stored, used to resume the agent stream. */
+export async function agentResumePoint(client: PoolClient, siteId: string): Promise<Date | null> {
+  const result = await client.query<{since: Date | null}>(`SELECT GREATEST(
+      (SELECT last_final_bucket FROM agent_status WHERE site_id=$1),
+      (SELECT max(bucket_start) FROM agent_buckets WHERE site_id=$1 AND final)) AS since`, [siteId]);
+  return result.rows[0]?.since ?? null;
+}

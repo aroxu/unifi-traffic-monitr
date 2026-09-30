@@ -64,7 +64,8 @@ services:
 
   collector:
     image: ghcr.io/aroxu/unifi-traffic-monitr:latest
-    command: ["pnpm", "--filter", "@utm/collector", "start"]
+    working_dir: /app/apps/collector
+    command: ["node", "--import", "tsx", "src/index.ts"]
     stop_grace_period: 60s
     environment:
       DB_HOST: db
@@ -81,6 +82,9 @@ services:
       UNIFI_WIRELESS_SCOPE: ${UNIFI_WIRELESS_SCOPE:-reported}
       UNIFI_WIRELESS_RX_DIRECTION: ${UNIFI_WIRELESS_RX_DIRECTION:-upload}
       COLLECT_INTERVAL_MS: ${COLLECT_INTERVAL_MS:-30000}
+      UNIFI_AGENT_URL: ${UNIFI_AGENT_URL:-}
+      UNIFI_AGENT_TOKEN: ${UNIFI_AGENT_TOKEN:-}
+      UNIFI_AGENT_CERT_SHA256: ${UNIFI_AGENT_CERT_SHA256:-}
     depends_on:
       bootstrap-admin:
         condition: service_completed_successfully

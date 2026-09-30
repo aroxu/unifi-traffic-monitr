@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import { bigint, boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 
 const t = (name: string) => timestamp(name, { withTimezone: true, mode: 'date' });
@@ -88,5 +89,32 @@ export const settings = pgTable('settings', {
   rawRetentionDays: integer('raw_retention_days').notNull().default(7),
   fiveMinuteRetentionDays: integer('five_minute_retention_days').notNull().default(90),
   hourlyRetentionDays: integer('hourly_retention_days').notNull().default(365),
+  updatedAt: t('updated_at').notNull().defaultNow(),
+});
+
+/** Five-minute ledger received from the gateway agent, keyed by MAC address. */
+export const agentBuckets = pgTable('agent_buckets', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  siteId: uuid('site_id').notNull().references(() => sites.id),
+  // Lowercase MAC address, or 'unattributed' for client IPs without a MAC.
+  subject: text('subject').notNull(),
+  clientId: uuid('client_id').references(() => clients.id),
+  bucketStart: t('bucket_start').notNull(),
+  scope: text('scope').notNull(), direction: text('direction').notNull(),
+  bytes: bytes('bytes').notNull(),
+  coverageSeconds: integer('coverage_seconds').notNull(),
+  final: boolean('final').notNull(),
+  receivedAt: t('received_at').notNull().defaultNow(),
+}, (table) => [uniqueIndex('agent_buckets_key').on(table.siteId, table.subject, table.bucketStart, table.scope, table.direction),
+  index('agent_buckets_final_idx').on(table.siteId, table.final, table.bucketStart),
+  index('agent_buckets_unresolved_idx').on(table.siteId, table.bucketStart).where(sql`client_id IS NULL`)]);
+
+export const agentStatus = pgTable('agent_status', {
+  siteId: uuid('site_id').primaryKey().references(() => sites.id),
+  connected: boolean('connected').notNull().default(false),
+  agentId: text('agent_id'), agentVersion: text('agent_version'),
+  connectedAt: t('connected_at'), disconnectedAt: t('disconnected_at'),
+  lastFrameAt: t('last_frame_at'), lastFinalBucket: t('last_final_bucket'),
+  earliestAvailable: t('earliest_available'), lastError: text('last_error'),
   updatedAt: t('updated_at').notNull().defaultNow(),
 });
