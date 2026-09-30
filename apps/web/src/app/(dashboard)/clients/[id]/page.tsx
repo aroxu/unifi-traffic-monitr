@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import {notFound} from 'next/navigation';
 import {isUuid} from '@utm/contracts';
-import {getAgentStatus, getClient, getClientConnection, getClientRecentSamples} from '@/lib/queries';
+import {getAgentStatus, getClient, getClientAgentToday, getClientConnection, getClientRecentSamples} from '@/lib/queries';
 import {getAvailableClientScopes, getClientTraffic, type MeasuredScope} from '@/lib/traffic';
 import {TrafficChart} from '@/components/traffic-chart';
 import {TrafficPeriodSelect} from '@/components/traffic-period-select';
@@ -30,8 +30,9 @@ export default async function ClientPage({params, searchParams}: {
   if (!client) notFound();
   const query = await searchParams;
   const period = query.period && Object.hasOwn(periods, query.period) ? query.period as keyof typeof periods : '24h';
-  const [device, samples, scopes, agent] = await Promise.all([
-    getClientConnection(client.deviceId), getClientRecentSamples(id), getAvailableClientScopes(id), getAgentStatus()
+  const [device, samples, scopes, agent, today] = await Promise.all([
+    getClientConnection(client.deviceId), getClientRecentSamples(id), getAvailableClientScopes(id), getAgentStatus(),
+    getClientAgentToday(id)
   ]);
   const scope = scopes.find(item => item === query.scope) ?? scopes[0];
   const end = new Date();
@@ -45,7 +46,7 @@ export default async function ClientPage({params, searchParams}: {
       </dl>{client.connection === 'wireless' && <p className="mt-3 text-xs muted">마지막 수집값이며 실시간 신호가 아닙니다.</p>}</section>
       <section className="panel"><p className="eyebrow">USAGE</p><h2 className="panel-title mt-1">트래픽 사용량</h2>{samples.length ? <><div className="mt-5 flex items-center gap-3 rounded-2xl p-4" style={{background: 'var(--surface-alt)'}}><span className="metric-icon"><Activity size={19} aria-hidden="true" /></span><div><p className="font-bold">트래픽 정보 {new Set(samples.map(sample => sample.source)).size}종</p><p className="mt-1 text-xs muted">마지막 수집 {dateTime(samples[0].collectedAt)}</p></div></div>{!traffic && <p className="mt-4 text-sm muted">아직 표시할 사용량이 없습니다.</p>}</> : <p className="mt-4 text-sm muted">이 클라이언트의 트래픽 정보가 아직 수집되지 않았습니다.</p>}</section>
     </div>
-    {agent && <ClientLiveTraffic clientId={id} connected={agent.connected} />}
+    {agent && <ClientLiveTraffic clientId={id} connected={agent.connected} today={today} />}
     {traffic && <section className="panel space-y-4"><div className="section-header"><div><p className="eyebrow">TRAFFIC HISTORY</p><h2 className="panel-title mt-1">{scopeLabels[scope]} 트래픽</h2><p className="panel-subtitle">{scopeNotes[scope]}</p></div></div>
       {scopes.length > 1 && <nav aria-label="트래픽 범위" className="flex flex-wrap gap-2">{scopes.map(item => <Link key={item} href={`/clients/${id}?period=${period}&scope=${item}`} className="scope-link" aria-current={item === scope ? 'page' : undefined}>{scopeLabels[item]}</Link>)}</nav>}
       <TrafficPeriodSelect clientId={id} period={period} scope={scope} />

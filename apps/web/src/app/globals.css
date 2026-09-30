@@ -143,3 +143,14 @@ a:focus-visible, button:focus-visible, input:focus-visible {outline: 3px solid v
 .live-rate strong {display: block; margin-top: .3rem; font-size: 1.35rem; font-weight: 800; letter-spacing: -.03em;}
 .live-spark {display: block; width: 100%; height: 64px; border-radius: 12px; background: var(--surface-alt);}
 @media (max-width: 900px) {.live-grid {grid-template-columns: 1fr;}}
+.live-scopes {display: grid; gap: 1.1rem;}
+.live-scopes--split {grid-template-columns: repeat(2, minmax(0, 1fr));}
+.live-scope {display: grid; gap: .65rem; align-content: start;}
+.live-today {display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .4rem; border: 1px solid var(--line); border-radius: 12px; padding: .55rem .8rem; font-size: .8rem; font-weight: 700;}
+.live-today > span:first-child {color: var(--subtle); font-size: .73rem;}
+@media (max-width: 760px) {.live-scopes--split {grid-template-columns: 1fr;}}
+.live-client-row {display: flex; min-height: 3.2rem; align-items: center; gap: .65rem; border-bottom: 1px solid var(--line); padding: .45rem 0; color: var(--ink); font-size: .83rem;}
+li:last-child > .live-client-row {border-bottom: 0;}
+.live-client-row:hover .font-semibold {color: var(--accent);}
+.live-client-row .rank {display: inline-grid; width: 1.6rem; height: 1.6rem; flex: none; place-items: center; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font-size: .7rem; font-weight: 800;}
+.live-client-rates {display: block; margin-top: .15rem; color: var(--subtle); font-size: .72rem; line-height: 1.45;}

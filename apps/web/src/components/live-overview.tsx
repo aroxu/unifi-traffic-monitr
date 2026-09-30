@@ -7,7 +7,7 @@ import Link from 'next/link';
 import {ArrowUpRight, DatabaseZap, RadioTower, UsersRound} from 'lucide-react';
 import {dateTime, runStatus, scopeLabels} from '@/lib/format';
 import {formatUsage, TrafficChart, type TrafficData} from '@/components/traffic-chart';
-import {LiveTrafficCard} from '@/components/live-traffic';
+import {LiveTrafficCard, type TodayUsage} from '@/components/live-traffic';
 
 type Overview = {
   sites: {id: string; label: string}[];
@@ -20,7 +20,8 @@ type Overview = {
   traffic: (TrafficData & {scope: 'internet' | 'combined' | 'lan' | 'reported';
     topClients: {id: string; name: string | null; mac: string; totalBytes: string}[]}) | null;
   latestRun: {status: string; finishedAt: Date | string | null; clientCount: number | null} | null;
-  agent: {connected: boolean; version: string | null; lastFrameAt: Date | string | null; lastError: string | null} | null;
+  agent: {connected: boolean; version: string | null; lastFrameAt: Date | string | null; lastError: string | null;
+    today: TodayUsage | null} | null;
   clientLabels: Record<string, string>;
 };
 
@@ -55,7 +56,7 @@ function OverviewContents({initialData}: {initialData: Overview}) {
       <Link href="/settings">수집 상태 보기 <ArrowUpRight size={15} aria-hidden="true" /></Link>
     </section>
     {isError && <div role="alert" className="panel flex flex-wrap items-center gap-3 text-sm"><span>최신 상태를 읽지 못했습니다. 마지막으로 받은 값을 표시합니다.</span><Button size="sm" variant="secondary" onPress={() => void refetch()}>다시 읽기</Button></div>}
-    {data.agent && <LiveTrafficCard clientLabels={data.clientLabels} connected={data.agent.connected} />}
+    {data.agent && <LiveTrafficCard clientLabels={data.clientLabels} connected={data.agent.connected} today={data.agent.today} />}
     <div className="metric-grid">
       <Card className="metric-card"><Card.Header><div className="metric-icon"><UsersRound size={19} aria-hidden="true" /></div><Card.Title>클라이언트</Card.Title></Card.Header><Card.Content><p className="metric-value number">{data.clientCount}<span className="ml-1 text-base font-semibold">대</span></p><p className="metric-caption">{data.onlineCount === null || data.offlineCount === null ? '온라인 상태 미확인' : `온라인 ${data.onlineCount}대 · 오프라인 ${data.offlineCount}대`}</p></Card.Content></Card>
       <Card className="metric-card"><Card.Header><div className="metric-icon"><DatabaseZap size={19} aria-hidden="true" /></div><Card.Title>최근 트래픽 정보</Card.Title></Card.Header><Card.Content><p className="metric-value number">{data.rawCounterCount ?? '—'}{data.rawCounterCount !== null && <span className="ml-1 text-base font-semibold">건</span>}</p><p className="metric-caption">{data.latestRun?.status === 'error' ? '최근 수집 실패로 확인할 수 없습니다' : data.rawCounterCount === null ? '첫 수집을 기다리는 중입니다' : '이번 수집에서 받은 정보'}{withoutCounters ? ` · 확인하지 못한 연결 기기 ${withoutCounters}대` : ''}</p></Card.Content></Card>

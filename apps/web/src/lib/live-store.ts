@@ -10,6 +10,9 @@ export type LiveStatus = 'waiting' | 'live' | 'stale' | 'disconnected';
 export type LiveState = {status: LiveStatus; frames: LiveFrame[]; receivedAt: number};
 
 export const liveWindowMs = 60000;
+// Frames are kept longer than the chart window so today's usage can add the
+// bytes that arrived after the last stored bucket update.
+const historyMs = 180000;
 const staleAfterMs = 5000;
 
 let state: LiveState = {status: 'waiting', frames: [], receivedAt: 0};
@@ -43,7 +46,7 @@ export function pushLive(raw: string) {
     typeof row[0] === 'string' && row.slice(1).every(value => Number.isFinite(value)));
   const frame: LiveFrame = {at, intervalMs: Number(message.intervalMs) || 1000, totals, clients,
     omitted: Number(message.omitted) || 0};
-  const frames = [...state.frames.filter(item => item.at > at - liveWindowMs && item.at < at), frame];
+  const frames = [...state.frames.filter(item => item.at > at - historyMs && item.at < at), frame];
   update({status: 'live', frames, receivedAt: now});
 }
 

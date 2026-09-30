@@ -2,6 +2,36 @@ import 'server-only';
 import { and, asc, desc, eq, ilike, or, sql } from 'drizzle-orm';
 import { clientSamples, clients, collectorRuns, devices, getDb, getOverviewTraffic, getPool, sites } from '@utm/db';
 import type {ClientListQuery} from '@utm/contracts';
+import type {Pool, PoolClient} from 'pg';
+
+/** Today's gateway-measured bytes and the time the newest stored bucket update arrived. */
+export type AgentToday = {asOf: string | null; internet: {up: number; down: number}; lan: {up: number; down: number}};
+
+async function agentToday(executor: Pool | PoolClient, siteId: string, clientId?: string): Promise<AgentToday> {
+  const result = await executor.query<{scope: string; direction: string; bytes: string; as_of: Date | null}>(`
+    WITH tz AS (SELECT COALESCE((SELECT timezone FROM settings WHERE id=1), 'Asia/Seoul') AS name)
+    SELECT b.scope, b.direction, sum(b.bytes)::text AS bytes, max(b.received_at) AS as_of
+    FROM agent_buckets b, tz
+    WHERE b.site_id=$1 AND ($2::uuid IS NULL OR b.client_id=$2::uuid)
+      AND b.bucket_start >= (date_trunc('day', now() AT TIME ZONE tz.name) AT TIME ZONE tz.name)
+    GROUP BY b.scope, b.direction`, [siteId, clientId ?? null]);
+  const today: AgentToday = {asOf: null, internet: {up: 0, down: 0}, lan: {up: 0, down: 0}};
+  for (const row of result.rows) {
+    const scope = row.scope === 'internet' ? today.internet : row.scope === 'lan' ? today.lan : null;
+    if (!scope) continue;
+    if (row.direction === 'upload') scope.up = Number(row.bytes);
+    if (row.direction === 'download') scope.down = Number(row.bytes);
+    if (row.as_of && (!today.asOf || row.as_of.toISOString() > today.asOf)) today.asOf = row.as_of.toISOString();
+  }
+  return today;
+}
+
+/** Today's gateway-measured usage for one client, or null when the agent was never configured. */
+export async function getClientAgentToday(clientId: string): Promise<AgentToday | null> {
+  const site = await getPool().query<{site_id: string}>(`SELECT c.site_id FROM clients c
+    JOIN agent_status a ON a.site_id=c.site_id WHERE c.id=$1`, [clientId]);
+  return site.rows[0] ? agentToday(getPool(), site.rows[0].site_id, clientId) : null;
+}
 
 export async function getOverview() {
   const client = await getPool().connect();
@@ -15,15 +45,16 @@ export async function getOverview() {
       db.select({known: sql<number>`count(${clients.online})::int`, online: sql<number>`count(*) filter (where ${clients.online} = true)::int`, offline: sql<number>`count(*) filter (where ${clients.online} = false)::int`}).from(clients),
       db.select().from(collectorRuns).orderBy(desc(collectorRuns.startedAt)).limit(1)
     ]);
-    const [measured, traffic, agentRows, labelRows] = siteRows[0] ? await Promise.all([
+    const [measured, traffic, agentRows, labelRows, todayUsage] = siteRows[0] ? await Promise.all([
       client.query<{present: boolean}>(`SELECT EXISTS (SELECT 1 FROM traffic_rollups
         WHERE site_id=$1 AND observed_seconds>0 LIMIT 1) AS present`, [siteRows[0].id]),
       getOverviewTraffic(new Date(end.getTime() - 86400000), end, siteRows[0].id, client),
       client.query<{connected: boolean; agent_version: string | null; last_frame_at: Date | null; last_error: string | null}>(
         `SELECT connected AND last_frame_at > now() - interval '60 seconds' AS connected, agent_version, last_frame_at, last_error
           FROM agent_status WHERE site_id=$1`, [siteRows[0].id]),
-      client.query<{id: string; label: string}>('SELECT id, COALESCE(name, mac) AS label FROM clients WHERE site_id=$1', [siteRows[0].id])
-    ]) : [null, null, null, null];
+      client.query<{id: string; label: string}>('SELECT id, COALESCE(name, mac) AS label FROM clients WHERE site_id=$1', [siteRows[0].id]),
+      agentToday(client, siteRows[0].id)
+    ]) : [null, null, null, null, null];
     const rawSamples = latestRun[0] && latestRun[0].status !== 'error'
       ? await db.select({count: sql<number>`count(*)::int`,
         clients: sql<number>`count(distinct ${clientSamples.clientId})::int`})
@@ -36,7 +67,7 @@ export async function getOverview() {
       counterClientCount: latestRun[0] && latestRun[0].status !== 'error' ? rawSamples[0]?.clients ?? 0 : null,
       hasMeasuredUsage: measured?.rows[0]?.present ?? false, traffic,
       agent: agentRow ? {connected: agentRow.connected, version: agentRow.agent_version, lastFrameAt: agentRow.last_frame_at,
-        lastError: agentRow.last_error} : null,
+        lastError: agentRow.last_error, today: todayUsage} : null,
       clientLabels: Object.fromEntries((labelRows?.rows ?? []).map(row => [row.id, row.label]))};
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
