@@ -8,6 +8,7 @@ import {backfillPendingRollups} from './rollups';
 import {saveCycle} from './storage';
 import {AgentSession, agentConfigFromEnv} from './agent';
 import {resolveAgentClients} from './agent-ingest';
+import {RecordedCycleError, classifyUnifiError} from './errors';
 
 const siteUuid = process.env.UNIFI_SITE_UUID ?? '';
 const internalName = process.env.UNIFI_SITE ?? 'default';
@@ -30,17 +31,18 @@ process.on('SIGTERM', stop);
 process.on('SIGINT', stop);
 
 function classify(error: unknown): string {
+  if (error instanceof RecordedCycleError) return error.code;
   if (error instanceof UnifiHttpError) return `http_${error.status}`;
   if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) return 'timeout';
   return 'fetch_validation_or_database_error';
 }
 
-async function recordError(client: PoolClient, dbSiteId: string, startedAt: Date, error: unknown): Promise<void> {
+async function recordError(client: PoolClient, dbSiteId: string, startedAt: Date, code: string): Promise<void> {
   await client.query(`WITH failed AS (
     INSERT INTO collector_runs (site_id, started_at, finished_at, status, error_code)
     VALUES ($1,$2,now(),$3,$4) RETURNING id
   ) SELECT pg_notify('utm_collection', id::text) FROM failed`,
-    [dbSiteId, startedAt, 'error', classify(error)]);
+    [dbSiteId, startedAt, 'error', code]);
 }
 
 
@@ -80,8 +82,9 @@ async function cycle(): Promise<void> {
       if (new Set(connected.map(row => row.mac)).size !== connected.length) throw new Error('Duplicate connected client MAC');
       if (new Set(devices.map(row => row.mac)).size !== devices.length) throw new Error('Duplicate device MAC');
     } catch (error) {
-      await recordError(client, dbSiteId, startedAt, error);
-      throw error;
+      const code = classifyUnifiError(error);
+      await recordError(client, dbSiteId, startedAt, code);
+      throw new RecordedCycleError(code, error);
     }
     const rawCount = await saveCycle(client, dbSiteId, startedAt, snapshots, connected, devices, counterMappings, maxGapMs);
     console.log(`Collection succeeded: ${snapshots.length} clients, ${connected.length} connected, ${devices.length} devices, ${rawCount} raw counters`);

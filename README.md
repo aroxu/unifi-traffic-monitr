@@ -1,166 +1,518 @@
+<div align="center">
+
 # UniFi Traffic Monitor
 
-구현 중인 UniFi 클라이언트 트래픽 모니터입니다. 현재 **실장비 PoC, 관리자 로그인, PostgreSQL, 클라이언트·장비 동기화, 원본 카운터/체크포인트 수집, 게이트웨이 에이전트의 직접 측정과 실시간 화면**이 동작합니다. `reported` 범위는 UniFi API 원본 카운터의 정상 차분을 기간별로 표시합니다. 이 값은 인터넷/LAN 포함 범위와 실제 전송량 대비 오차가 확인되지 않았으므로 인터넷 전용 사용량으로 해석하지 않습니다. 게이트웨이 에이전트를 설치하면 UCG가 직접 센 `internet`·`lan` 사용량과 1초 단위 실시간 속도를 표시합니다. 실장비 확인 결과는 [POC_RESULTS.md](POC_RESULTS.md)에 기록합니다.
+**UniFi 게이트웨이의 클라이언트별 인터넷·내부 네트워크 사용량을 기록하고 실시간으로 보여주는 셀프 호스팅 대시보드**
 
-## 준비
+[![GHCR 이미지](https://github.com/aroxu/unifi-traffic-monitr/actions/workflows/publish-image.yml/badge.svg)](https://github.com/aroxu/unifi-traffic-monitr/actions/workflows/publish-image.yml)
+[![에이전트 릴리스](https://github.com/aroxu/unifi-traffic-monitr/actions/workflows/release-agent.yml/badge.svg)](https://github.com/aroxu/unifi-traffic-monitr/actions/workflows/release-agent.yml)
+[![Agent](https://img.shields.io/github/v/release/aroxu/unifi-traffic-monitr?filter=agent-v*&label=agent&logo=go&logoColor=white)](https://github.com/aroxu/unifi-traffic-monitr/releases/latest)
+[![Container](https://img.shields.io/badge/ghcr.io-unifi--traffic--monitr-2496ED?logo=docker&logoColor=white)](https://github.com/aroxu/unifi-traffic-monitr/pkgs/container/unifi-traffic-monitr)
 
-- Node.js 24, pnpm 12.4.1, PostgreSQL 17 또는 Docker Compose
-- UCG 로컬 HTTPS 주소, 읽기 전용 API 키 또는 로컬 세션 쿠키, 내부 사이트 이름 및 공식 사이트 UUID
-- 실서비스에서는 신뢰할 수 있는 인증서를 사용합니다. TLS 검증을 끄는 옵션은 없습니다.
+![Next.js](https://img.shields.io/badge/Next.js-16-000000?logo=nextdotjs&logoColor=white)
+![Node.js](https://img.shields.io/badge/Node.js-24-5FA04E?logo=nodedotjs&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)
+![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
+![Tested](https://img.shields.io/badge/tested-UCG%20Fiber%20%C2%B7%20UniFi%20OS%205.1-0559C9?logo=ubiquiti&logoColor=white)
 
-```sh
-cp .env.example .env
-pnpm install
-pnpm test
-pnpm typecheck
+[빠른 시작](#빠른-시작) · [CA 인증서](#unifi-인증서ca-설정) · [게이트웨이 에이전트](#게이트웨이-에이전트-선택) · [사용 방법](#사용-방법) · [문제 해결](#문제-해결)
+
+</div>
+
+---
+
+## 주요 기능
+
+- **클라이언트별 사용량 기록**: 5분·1시간 단위로 저장하고, 30분부터 30일까지 기간별 그래프로 봅니다.
+- **게이트웨이 직접 측정**: 선택 설치하는 [게이트웨이 에이전트](agent/README.md)가 UCG의 연결 추적(conntrack) 카운터를 읽어 **인터넷**과 **내부 네트워크** 사용량을 나눠 셉니다.
+- **실시간 화면**: 에이전트가 연결되어 있으면 1초마다 현재 속도, 최근 1분 그래프, 오늘 누적 사용량이 갱신됩니다.
+- **끊김 없는 기록**: 수집 서버가 멈춰 있던 동안의 5분 기록을 게이트웨이가 7일까지 보관했다가, 다시 연결되면 채웁니다.
+- **UniFi API 연동**: 클라이언트 이름·IP·연결 장비·무선 신호, UniFi 장비 목록, 컨트롤러가 보고한 트래픽 카운터를 수집합니다.
+- **관리자 로그인과 모바일 화면**: 공개 가입 없이 관리자 계정으로만 접근하고, 밝은/어두운 테마와 휴대폰 화면을 지원합니다.
+
+## 구성
+
+```mermaid
+flowchart LR
+  subgraph GW["UniFi 게이트웨이"]
+    API["UniFi Network API"]
+    AG["게이트웨이 에이전트<br/>(선택, Go)"]
+  end
+  subgraph HOST["Docker 호스트"]
+    COL["collector"]
+    DB[("PostgreSQL")]
+    WEB["web (Next.js)"]
+  end
+  API -- "HTTPS + API 키 (30초)" --> COL
+  AG -- "WSS (1초 실시간 + 5분 기록)" --> COL
+  COL --> DB
+  DB -- "변경 알림" --> WEB
+  WEB -- "SSE" --> USER["브라우저"]
 ```
 
-`.env`는 Git에 포함되지 않습니다. Compose는 `deploy` 디렉터리의 파일을 사용합니다.
+| 구성 요소 | 하는 일 |
+| --- | --- |
+| `collector` | UniFi API를 30초마다 읽고, 에이전트 스트림을 받아 PostgreSQL에 저장합니다. API 키와 에이전트 토큰은 이 컨테이너에만 전달됩니다. |
+| `web` | 로그인, 대시보드, API를 제공합니다. DB가 바뀌면 열려 있는 화면을 자동으로 갱신합니다. |
+| `db` | PostgreSQL 17. 모든 기록과 설정을 보관합니다. |
+| 게이트웨이 에이전트 | UCG에 설치하는 선택 구성 요소입니다. 게이트웨이를 지나는 트래픽을 직접 셉니다. |
 
-브라우저 검증은 웹이 실행 중일 때 `E2E_ADMIN_EMAIL`과 `E2E_ADMIN_PASSWORD`를 현재 셸에만 설정한 뒤 `pnpm --filter @utm/web e2e`로 실행합니다. 첫 실행에 브라우저가 없다면 `pnpm --filter @utm/web exec playwright install chromium`을 사용합니다. 테스트는 1440px 데스크톱과 390px 모바일에서 보호된 API, 로그인, 목록 필터, 상세를 확인합니다. 별도 검증 DB에 사용량 구간이 있으면 `E2E_BASE_URL`과 `E2E_CHART_CLIENT_ID`를 지정해 차트 표시와 기간 전환도 시험할 수 있습니다.
+## 요구 사항
 
-빈 DB 초기 화면 검증은 마이그레이션과 관리자 계정 생성이 끝난 **별도 시험 DB·웹**에만 `E2E_EMPTY_DB=1`과 `E2E_BASE_URL`을 지정해 `e2e/empty-state.spec.ts`를 실행합니다. 운영 DB에는 빈 상태 시험을 실행하지 않습니다.
+- UniFi OS 게이트웨이와 UniFi Network 애플리케이션. UCG Fiber(UniFi OS 5.1.33, Network 10.6.106)에서 검증했습니다.
+- Docker Engine과 Docker Compose v2가 있는 호스트 (amd64 또는 arm64). 이 호스트에서 게이트웨이의 LAN 주소 443 포트로 연결할 수 있어야 합니다.
+- UniFi Network API 키
+- `openssl`과 `curl` (인증서 준비와 연결 확인용)
 
-## 읽기 전용 PoC
+## 빠른 시작
 
-환경변수 `UNIFI_URL`, `UNIFI_SITE`, `UNIFI_API_KEY` 또는 `UNIFI_COOKIE`를 설정한 뒤 `pnpm poc`를 실행합니다. 공식 사이트 목록의 모든 페이지에서 UUID와 내부 이름을 확인하고 내부 클라이언트 카운터 필드의 존재 여부를 확인합니다. 출력에는 원본 응답, 자격 증명, MAC, 클라이언트 이름, IP가 없고 실행마다 바뀌는 익명 ID가 들어갑니다. 내부 API 접근에 키 권한이 없으면 로컬 읽기 전용 계정의 쿠키를 사용할 수 있는지 장비에서 확인해야 합니다.
+공개 GHCR 이미지(`ghcr.io/aroxu/unifi-traffic-monitr:latest`)로 실행합니다. 소스 코드를 받을 필요는 없습니다.
 
-PoC 결과만으로 `rx_bytes`가 업로드/다운로드 중 무엇인지, 인터넷 전용인지 판단하지 않습니다. 현재 운영은 사용자의 선택에 따라 별도의 통제 전송 없이 API 원본 카운터를 `reported` 범위로 집계합니다. `rx`를 업로드, `tx`를 다운로드로 표시하는 방향은 기존 유선 인터넷·무선 LAN 관측에 근거하며, 모든 기기에서 별도로 검증한 값은 아닙니다. 공식 사이트 UUID와 내부 사이트 이름은 별도로 확인합니다.
-
-범위를 추가로 확인하려는 경우 `MEASURE_CLIENT_IP` 또는 `MEASURE_CLIENT_MAC` 하나를 셸에 설정한 뒤 `pnpm --filter @utm/collector measure`로 원본 카운터를 읽을 수 있습니다. 아래 로컬 실행 절차처럼 `.env`의 UniFi 연결 설정과 `UNIFI_SITE_UUID`를 현재 셸에 로드하고, 전송을 시작하기 전에 첫 `baseline` 샘플이 출력될 때까지 기다립니다. 기본값은 20초 간격 12회이며 `MEASURE_SAMPLES`(2~60)와 `MEASURE_INTERVAL_MS`(5000~60000)로 조정할 수 있습니다. 출력은 원본 `rx`/`tx`의 샘플별 변화량과 품질을 JSON으로 표시하며 클라이언트 식별 정보는 출력하지 않습니다. 이 도구는 DB를 변경하지 않습니다. 인터넷/LAN 범위를 확정하려면 통제된 전송의 실측이 필요하지만, `reported` 범위 사용에는 이를 요구하지 않습니다.
-
-## 로컬 실행
-
-DB와 환경변수를 준비한 뒤 `.env`를 현재 셸에 로드합니다. Compose는 `--env-file`로 별도 로드합니다.
+### 1. 실행 파일 받기
 
 ```sh
-set -a; source .env; set +a
-pnpm db:migrate
-pnpm admin:create --email admin@example.com
-pnpm dev
+mkdir unifi-traffic-monitor && cd unifi-traffic-monitor
+base=https://raw.githubusercontent.com/aroxu/unifi-traffic-monitr/main/examples/ghcr
+curl -fsSLO "$base/docker-compose.yml"
+curl -fsSLO "$base/docker-compose.ca.yml"
+curl -fsSL -o .env "$base/.env.example"
+chmod 600 .env
 ```
 
-`admin:create`는 비밀번호를 대화형으로 입력받습니다. 공개 가입은 비활성화돼 있습니다. 앱은 기본 `http://localhost:3000`에서 실행합니다. 운영 시 `BETTER_AUTH_URL`은 실제 HTTPS 주소로 설정합니다.
+### 2. UniFi API 키 만들기
 
-## GHCR 이미지로 실행
+UniFi 콘솔에서 **Network → Settings → Control Plane → Integrations → Create API Key**를 선택합니다. 키는 만들 때 한 번만 보이므로 바로 복사해 둡니다. 메뉴가 보이지 않으면 [Ubiquiti 안내](https://help.ui.com/hc/en-us/articles/30076656117655-Getting-Started-with-the-Official-UniFi-API)를 참고해 Network 애플리케이션을 업데이트하세요.
 
-`ghcr.io/aroxu/unifi-traffic-monitr:latest` 이미지는 GitHub Actions가 `main` 변경 시 `linux/amd64`와 `linux/arm64`로 게시합니다. 태그 `v*`를 푸시하면 동일한 버전 태그도 게시합니다. 이미지 안에 `.env`나 장비 인증 정보는 포함하지 않습니다.
+### 3. 게이트웨이 인증서 준비
 
-이미지만 받아 실행하는 독립 예시는 [`examples/ghcr/docker-compose.yml`](examples/ghcr/docker-compose.yml)과 [`examples/ghcr/.env.example`](examples/ghcr/.env.example)에 있습니다. `examples/ghcr` 디렉터리에서 다음처럼 시작합니다. `.env`의 빈 필수값을 먼저 채우세요. `BETTER_AUTH_SECRET`은 충분히 긴 무작위 값으로 지정합니다.
+UniFi OS의 기본 HTTPS 인증서는 게이트웨이가 스스로 만든 자체 서명 인증서입니다. 수집기는 TLS 검증을 끄지 않으므로 이 인증서를 신뢰 대상으로 지정해야 합니다. 대부분의 설치는 아래 세 줄이면 됩니다. 자세한 설명과 확인 방법은 [UniFi 인증서(CA) 설정](#unifi-인증서ca-설정)에 있습니다.
 
 ```sh
-cd examples/ghcr
-cp .env.example .env
-# .env에 DB·관리자 인증 정보, UniFi Network HTTPS 주소·API 키·사이트 UUID 설정
+UNIFI_IP=192.168.1.1   # 게이트웨이 LAN 주소로 바꾸세요
+openssl s_client -connect "$UNIFI_IP:443" -servername unifi.local </dev/null 2>/dev/null \
+  | openssl x509 -outform PEM -out unifi-ca.pem
+openssl x509 -in unifi-ca.pem -noout -subject -ext subjectAltName -fingerprint -sha256
+```
+
+### 4. 사이트 확인
+
+인증서와 API 키가 맞는지 확인하면서, `.env`에 넣을 사이트 값도 얻습니다.
+
+```sh
+UNIFI_API_KEY='붙여넣은 API 키'
+curl -fsS --cacert unifi-ca.pem --resolve "unifi.local:443:$UNIFI_IP" \
+  -H "X-API-KEY: $UNIFI_API_KEY" \
+  https://unifi.local/proxy/network/integration/v1/sites
+```
+
+```json
+{"offset":0,"limit":25,"count":1,"totalCount":1,
+ "data":[{"id":"0b1c2d3e-....","internalReference":"default","name":"Default"}]}
+```
+
+`id`는 `UNIFI_SITE_UUID`, `internalReference`는 `UNIFI_SITE`입니다. 여기서 오류가 나면 [문제 해결](#문제-해결)을 먼저 확인하세요.
+
+### 5. `.env` 작성
+
+```sh
+# 무작위 값 두 개를 만듭니다.
+openssl rand -base64 32   # POSTGRES_PASSWORD
+openssl rand -base64 48   # BETTER_AUTH_SECRET
+```
+
+```ini
+POSTGRES_PASSWORD=<무작위 값>
+BETTER_AUTH_SECRET=<무작위 값>
+BETTER_AUTH_URL=http://localhost:3000
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=<관리자 비밀번호>
+
+UNIFI_URL=https://unifi.local
+UNIFI_CONNECT_IP=192.168.1.1
+UNIFI_API_KEY=<API 키>
+UNIFI_SITE=default
+UNIFI_SITE_UUID=<4단계의 id>
+
+# 인증서 설정 (3단계에서 만든 파일의 절대 경로)
+UNIFI_CA_HOST_FILE=/home/you/unifi-traffic-monitor/unifi-ca.pem
+COMPOSE_FILE=docker-compose.yml:docker-compose.ca.yml
+```
+
+전체 변수는 [환경 변수](#환경-변수)를 참고하세요.
+
+### 6. 실행과 로그인
+
+```sh
+docker compose pull
 docker compose up -d
+docker compose logs -f collector
 ```
 
-웹은 기본적으로 호스트의 `127.0.0.1:3000`에서 열립니다. 다른 기기에서 접근하려면 `WEB_BIND`와 외부 HTTPS 프록시를 환경에 맞게 설정하세요. UniFi 인증서가 사설 CA로 발급됐다면 `.env`의 `UNIFI_CA_HOST_FILE`에 **Docker 호스트에 실제 존재하는 PEM 파일의 절대 경로**를 지정하고 CA 오버라이드를 함께 사용하세요.
+`Collection succeeded: 40 clients, ...`가 보이면 수집이 시작된 것입니다. 브라우저에서 `http://localhost:3000`을 열고 `ADMIN_EMAIL`·`ADMIN_PASSWORD`로 로그인합니다. 관리자 계정은 **빈 DB에 처음 시작할 때만** 만들어집니다. 나중에 `.env`의 비밀번호를 바꿔도 기존 계정은 바뀌지 않습니다.
+
+> [!TIP]
+> 인터넷과 내부 네트워크를 나눠 보려면 [게이트웨이 에이전트](#게이트웨이-에이전트-선택)를 추가로 설치하세요. 에이전트가 없으면 UniFi가 보고한 카운터(`컨트롤러 보고` 범위)만 표시됩니다.
+
+---
+
+## UniFi 인증서(CA) 설정
+
+수집기는 UniFi에 API 키를 보내기 전에 HTTPS 인증서를 검증합니다. 검증을 끄는 옵션은 일부러 두지 않았습니다. 검증 없이 연결하면 같은 네트워크의 다른 기기가 게이트웨이인 척 API 키를 가로챌 수 있기 때문입니다. 인증서 종류에 따라 설정이 다릅니다.
+
+| UniFi가 쓰는 인증서 | 해야 할 일 |
+| --- | --- |
+| **기본 자체 서명 인증서** (대부분) | 게이트웨이 인증서 파일을 받아 수집기에 신뢰 대상으로 지정합니다. 아래 1~5단계를 따르세요. |
+| 직접 만든 사설 CA로 발급한 인증서 | 그 CA의 루트 인증서를 지정합니다. [사설 CA를 쓰는 경우](#사설-ca나-공인-인증서를-쓰는-경우)를 보세요. |
+| 공인 CA 인증서 (예: Let's Encrypt) | CA 파일이 필요 없습니다. `UNIFI_URL`만 인증서의 도메인으로 맞춥니다. |
+
+### 1. 인증서 파일 받기
+
+**방법 A. Docker 호스트에서 바로 받기 (권장)**
 
 ```sh
-cd examples/ghcr
-# .env에서 UNIFI_CA_HOST_FILE=/absolute/path/to/unifi-ca.pem 설정
+UNIFI_IP=192.168.1.1
+openssl s_client -connect "$UNIFI_IP:443" -servername unifi.local </dev/null 2>/dev/null \
+  | openssl x509 -outform PEM -out unifi-ca.pem
+```
+
+게이트웨이가 실제로 보내는 인증서를 저장합니다. 자체 서명 인증서는 인증서 하나가 스스로를 서명하므로, 이 파일 자체가 CA 역할을 합니다.
+
+**방법 B. SSH로 게이트웨이에서 복사하기**
+
+게이트웨이에 SSH를 켜 두었다면 원본 파일을 직접 복사할 수 있습니다. 기본 인증서는 `/data/unifi-core/config/unifi-core.crt`에 있습니다.
+
+```sh
+ssh root@192.168.1.1 cat /data/unifi-core/config/unifi-core.crt > unifi-ca.pem
+```
+
+> [!CAUTION]
+> 옆에 있는 `unifi-core.key`는 게이트웨이의 **개인 키**입니다. 복사하거나 공유하지 마세요. 수집기에는 인증서(`.crt`)만 필요합니다. 인증서는 공개 정보라서 비밀로 둘 필요는 없습니다.
+
+**받은 인증서가 진짜인지 확인하기**
+
+방법 A는 네트워크로 받은 인증서입니다. 한 번은 게이트웨이의 원본과 지문이 같은지 비교하세요. SSH로 원본 지문을 확인하거나, 브라우저로 `https://게이트웨이IP`에 접속해 인증서 정보의 SHA-256 지문과 비교할 수 있습니다.
+
+```sh
+openssl x509 -in unifi-ca.pem -noout -fingerprint -sha256
+ssh root@192.168.1.1 openssl x509 -in /data/unifi-core/config/unifi-core.crt -noout -fingerprint -sha256
+```
+
+### 2. 인증서 이름 확인하기
+
+```sh
+openssl x509 -in unifi-ca.pem -noout -subject -issuer -enddate -ext subjectAltName
+```
+
+```text
+subject=CN=unifi.local
+issuer=CN=unifi.local
+notAfter=Dec 30 03:39:10 2027 GMT
+X509v3 Subject Alternative Name:
+    DNS:unifi.local, DNS:localhost, DNS:[::1], IP Address:127.0.0.1, IP Address:FE80:0:0:0:0:0:0:1
+```
+
+- **`subject`와 `issuer`가 같으면** 자체 서명 인증서입니다. 이 파일을 그대로 CA로 씁니다.
+- **`Subject Alternative Name`** 이 인증서가 인정하는 이름 목록입니다. 기본 인증서에는 게이트웨이의 LAN IP가 **없습니다**. 그래서 `UNIFI_URL`에 `https://192.168.1.1`처럼 IP를 쓰면 CA가 맞아도 이름 검증에서 실패합니다.
+- **`notAfter`** 만료일입니다. 이 날짜가 지나기 전에 게이트웨이 인증서가 바뀌면 파일도 다시 받아야 합니다.
+
+### 3. `.env`에 연결 정보 넣기
+
+```ini
+# 인증서 이름 목록에 있는 이름을 주소로 씁니다.
+UNIFI_URL=https://unifi.local
+# 그 이름을 DNS 대신 이 IP로 연결합니다. TLS 이름 검증은 unifi.local로 합니다.
+UNIFI_CONNECT_IP=192.168.1.1
+# Docker 호스트에 있는 PEM 파일의 절대 경로
+UNIFI_CA_HOST_FILE=/home/you/unifi-traffic-monitor/unifi-ca.pem
+# docker compose 명령에 CA 오버라이드를 항상 포함합니다.
+COMPOSE_FILE=docker-compose.yml:docker-compose.ca.yml
+```
+
+`UNIFI_CONNECT_IP`가 있으면 `unifi.local`을 DNS에서 찾지 않고 지정한 IP로 연결합니다. 접속 주소와 인증서 이름을 따로 맞출 수 있어서, 호스트의 `/etc/hosts`를 고칠 필요가 없습니다.
+
+`docker-compose.ca.yml`은 호스트 파일을 컨테이너 안의 고정 경로에 읽기 전용으로 연결합니다.
+
+```text
+Docker 호스트                                     collector 컨테이너
+UNIFI_CA_HOST_FILE=/home/you/.../unifi-ca.pem ──▶ /run/secrets/unifi-ca.pem (읽기 전용)
+                                                  UNIFI_CA_FILE=/run/secrets/unifi-ca.pem (자동 설정)
+```
+
+> [!IMPORTANT]
+> `.env`에는 **`UNIFI_CA_HOST_FILE`만** 적습니다. `UNIFI_CA_FILE`은 컨테이너 **안의** 경로라서 오버라이드가 자동으로 설정합니다. `UNIFI_CA_FILE`에 호스트 경로를 적으면 컨테이너가 파일을 찾지 못해 `Cannot read UNIFI_CA_FILE`(예전 버전은 `ENOENT`) 오류로 멈춥니다.
+
+`COMPOSE_FILE`을 쓰지 않으려면 매번 두 파일을 함께 지정합니다.
+
+```sh
 docker compose -f docker-compose.yml -f docker-compose.ca.yml up -d
 ```
 
-CA 오버라이드는 호스트 파일을 컨테이너의 `/run/secrets/unifi-ca.pem`에 읽기 전용으로 마운트하고, 수집기에는 그 컨테이너 경로를 전달합니다. 기존 `.env`의 `UNIFI_CA_FILE`에 호스트 경로를 넣으면 컨테이너에서 파일을 찾지 못합니다.
-
-인증서의 이름이 `unifi.local`이라면 `UNIFI_URL=https://unifi.local`로 설정하세요. DNS가 장비에 연결되지 않으면 `UNIFI_CONNECT_IP`에 실제 접속 주소를 지정할 수 있습니다. 인증서에 없는 IP 주소를 `UNIFI_URL`의 호스트로 쓰면 인증서 이름 검증이 실패합니다.
-
-이 저장소를 사용하던 호스트에는 이미 `.local/unifi-ca.pem`이 있습니다. 같은 호스트라면 그 파일의 절대 경로를 `UNIFI_CA_HOST_FILE`에 넣으면 됩니다. 다른 호스트에서 실행한다면 이 PEM 파일을 해당 Docker 호스트로 복사할 수 있습니다. 파일이 없고 UniFi가 자체 서명 인증서를 사용한다면, 기기에서 현재 제공하는 공개 인증서를 다음처럼 추출할 수 있습니다. `YOUR_UNIFI_IP`를 실제 접속 주소로 바꾸고, 저장 전 SHA-256 지문을 신뢰할 수 있는 기존 인증서나 관리 화면에서 확인하세요.
+### 4. 적용과 확인
 
 ```sh
-openssl s_client -connect YOUR_UNIFI_IP:443 -servername unifi.local </dev/null 2>/dev/null \
-  | openssl x509 -out unifi-ca.pem
-openssl x509 -in unifi-ca.pem -noout -fingerprint -sha256
+# 오버라이드가 포함되었는지
+docker compose config | grep -A2 unifi-ca.pem
+# 컨테이너 안에 파일이 보이는지
+docker compose up -d
+docker compose exec collector head -1 /run/secrets/unifi-ca.pem
+# 수집 결과
+docker compose logs --tail 20 collector
 ```
+
+`-----BEGIN CERTIFICATE-----`가 보이고 로그에 `Collection succeeded`가 나오면 완료입니다. 실패하면 로그의 `Collector cycle failed: <코드>`와 **상태·설정** 화면의 최근 수집 기록에 원인 코드가 표시됩니다. 코드별 해결 방법은 [인증서 오류](#인증서-오류)에 있습니다.
+
+### 5. 인증서가 바뀌었을 때
+
+UniFi 콘솔 초기화, 인증서 교체, 만료 후 재발급이 있으면 인증서 지문이 바뀝니다. 그러면 수집이 `tls_untrusted_certificate`로 실패합니다. 1단계로 파일을 다시 받아 같은 경로에 덮어쓴 뒤 수집기를 다시 시작합니다. 수집기는 시작할 때 인증서를 읽습니다.
 
 ```sh
-cp .env.example .env
-# .env에서 UTM_IMAGE=ghcr.io/aroxu/unifi-traffic-monitr:latest 및
-# POSTGRES_PASSWORD, BETTER_AUTH_SECRET, BETTER_AUTH_URL,
-# ADMIN_EMAIL, ADMIN_PASSWORD, UNIFI_URL, UNIFI_API_KEY,
-# UNIFI_SITE, UNIFI_SITE_UUID를 채우세요.
-docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.ghcr.yaml --profile collector pull
-docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.ghcr.yaml --profile collector up -d db migrate bootstrap-admin web collector
+docker compose restart collector
 ```
 
-관리자 이메일·비밀번호는 **빈 DB에 첫 계정을 만들 때만** 사용합니다. 기존 사용자가 있으면 건너뛰며, `.env`를 바꿔도 기존 비밀번호는 변경되지 않습니다. `UNIFI_URL`은 Network 앱의 HTTPS 주소이고 `UNIFI_API_KEY`는 collector에만 전달됩니다. `UNIFI_SITE_UUID`와 `UNIFI_SITE`도 같은 사이트를 가리켜야 합니다. `UNIFI_WIRED_SCOPE=reported`, `UNIFI_WIRED_RX_DIRECTION=upload`, `UNIFI_WIRELESS_SCOPE=reported`, `UNIFI_WIRELESS_RX_DIRECTION=upload`을 설정하면 API 보고 사용량을 표시합니다.
+### 사설 CA나 공인 인증서를 쓰는 경우
 
-사설 CA를 쓰는 경우 CA 파일을 collector 컨테이너에 읽기 전용으로 마운트하고 `UNIFI_CA_FILE`에 컨테이너 안의 경로를 지정하세요. 이 호스트의 `deploy/compose.local.yaml`이 해당 예시입니다. GHCR 이미지는 공개되어 있어 별도 로그인 없이 받을 수 있습니다.
+- **사설 CA:** `UNIFI_CA_HOST_FILE`에 게이트웨이 인증서가 아니라 **발급한 CA의 루트 인증서**를 지정합니다. 중간 CA가 있고 게이트웨이가 체인을 함께 보내지 않는다면, 중간 CA와 루트 인증서를 한 PEM 파일에 이어 붙입니다. `UNIFI_URL`은 인증서에 들어 있는 이름으로 씁니다.
+- **공인 인증서:** `UNIFI_CA_HOST_FILE`과 `COMPOSE_FILE` 줄을 지웁니다. `UNIFI_URL=https://<인증서 도메인>`으로 설정하고, 그 도메인이 LAN에서 게이트웨이로 연결되지 않으면 `UNIFI_CONNECT_IP`를 함께 지정합니다.
 
-Compose 사용 시 저장소 루트에서 `docker compose --env-file .env -f deploy/compose.yaml up -d db migrate web`로 시작합니다. 실장비 PoC와 사이트 매핑을 마친 뒤 `docker compose --env-file .env -f deploy/compose.yaml --profile collector up -d collector`를 실행합니다. `collector`는 클라이언트·장비 정보와 원본 카운터를 저장하며 UCG 자격 증명은 collector 서비스에만 전달됩니다.
+> [!NOTE]
+> [게이트웨이 에이전트](#게이트웨이-에이전트-선택)는 위 CA 설정을 쓰지 않습니다. 에이전트는 설치할 때 자체 인증서를 만들고, 수집기는 그 **SHA-256 지문**(`UNIFI_AGENT_CERT_SHA256`)으로 확인합니다.
 
-이 호스트처럼 Docker 브리지 컨테이너에서 LAN으로 나가는 연결이 막히거나 웹 포트 3000이 이미 사용 중이면 로컬 오버라이드를 적용할 수 있습니다. DB는 Docker에 유지되고 호스트의 `127.0.0.1:5433`에만 공개됩니다. 웹은 `127.0.0.1:3001`에서 실행됩니다.
+---
+
+## 게이트웨이 에이전트 (선택)
+
+에이전트를 설치하면 게이트웨이가 직접 센 **인터넷**·**내부 네트워크** 사용량과 1초 단위 실시간 속도를 볼 수 있습니다. 설치 파일은 게이트웨이의 `/data`에 들어가므로 재부팅과 펌웨어 업데이트 뒤에도 유지됩니다.
+
+1. UniFi 콘솔에서 SSH를 켜고 root로 접속합니다. 방법은 [Ubiquiti SSH 안내](https://help.ui.com/hc/en-us/articles/204909374-Connecting-to-UniFi-with-Debug-Tools-SSH)에 있습니다.
+2. 설치 스크립트를 실행합니다.
+
+   ```sh
+   curl -sSLf https://raw.githubusercontent.com/aroxu/unifi-traffic-monitr/main/agent/install.sh | sh
+   ```
+
+3. 출력된 값과 토큰을 확인합니다.
+
+   ```sh
+   /data/unifi-traffic-agent/manage.sh info    # Stream URL, Certificate
+   /data/unifi-traffic-agent/manage.sh token   # 토큰
+   ```
+
+4. 수집 서버의 `.env`에 세 값을 넣고 수집기를 다시 만듭니다.
+
+   ```ini
+   UNIFI_AGENT_URL=wss://192.168.1.1:8790/v1/stream
+   UNIFI_AGENT_TOKEN=<manage.sh token 출력>
+   UNIFI_AGENT_CERT_SHA256=<manage.sh info의 Certificate 값>
+   ```
+
+   ```sh
+   docker compose up -d collector
+   docker compose logs collector | grep 'Gateway agent'
+   ```
+
+`Gateway agent v0.1.x connected`가 보이면 개요 화면에 실시간 카드가 나타납니다. 측정 범위, 관리 명령, 프로토콜은 [agent/README.md](agent/README.md)에 정리했습니다.
+
+---
+
+## 사용 방법
+
+### 화면
+
+| 화면 | 내용 |
+| --- | --- |
+| **개요** | 실시간 속도·오늘 사용량(에이전트), 클라이언트 온라인/오프라인 수, 최근 수집 상태, 최근 24시간 트래픽, 사용량 상위 클라이언트 |
+| **클라이언트** | 이름·IP·MAC 검색, 유선/무선과 연결 장비 필터, 정렬, 페이지당 개수 조정 |
+| **클라이언트 상세** | 연결 정보, 무선 신호·잡음, 실시간 속도와 오늘 사용량, 30분~30일 기간별 사용량 그래프 |
+| **장비** | UniFi 장비 목록과 장비별 연결 클라이언트. 클라이언트 수를 누르면 해당 장비로 필터링된 목록이 열립니다. |
+| **상태·설정** | 에이전트 연결 상태, 최근 수집 기록과 오류 코드, 데이터 보존 기간 |
+
+화면은 수집 결과가 저장될 때마다 새로고침 없이 갱신됩니다. 브라우저 탭을 숨기면 연결을 닫고, 다시 보면 이어서 받습니다.
+
+### 사용량 범위
+
+| 범위 | 출처 | 포함하는 트래픽 |
+| --- | --- | --- |
+| **인터넷(게이트웨이 측정)** | 게이트웨이 에이전트 | WAN으로 나가고 들어온 트래픽 |
+| **LAN(게이트웨이 경유)** | 게이트웨이 에이전트 | 게이트웨이 자신 또는 다른 내부 네트워크(VLAN)와 주고받은 트래픽 |
+| **컨트롤러 보고** | UniFi API 카운터 | UniFi가 보고한 값입니다. 인터넷과 LAN이 섞일 수 있고 실제 전송량과의 오차는 확인하지 않았습니다. |
+
+에이전트가 있으면 화면은 인터넷 범위를 먼저 보여주고, 클라이언트 상세에서 범위를 바꿀 수 있습니다.
+
+> [!NOTE]
+> 같은 네트워크 안에서 스위치로만 오가는 통신(기기 A ↔ 스위치 ↔ 기기 B)은 게이트웨이를 지나지 않아 에이전트가 볼 수 없습니다. 같은 가상화 호스트 안의 VM끼리 주고받는 통신도 마찬가지입니다.
+
+### 데이터 보존
+
+**상태·설정** 화면에서 원본 샘플(기본 7일), 5분 집계(90일), 1시간 집계(365일)의 보존 기간을 바꿀 수 있습니다. 원본 ≤ 5분 ≤ 1시간 순서여야 합니다. 오래된 상세 기록은 집계에 합계를 남긴 뒤에 지웁니다.
+
+---
+
+## 환경 변수
+
+| 변수 | 필수 | 설명 |
+| --- | :---: | --- |
+| `POSTGRES_PASSWORD` | ✅ | PostgreSQL 비밀번호 |
+| `BETTER_AUTH_SECRET` | ✅ | 로그인 세션 서명 키. 32자 이상의 무작위 값 |
+| `BETTER_AUTH_URL` | ✅ | 브라우저가 접속하는 주소. 예: `http://localhost:3000`, `https://traffic.example.com` |
+| `ADMIN_EMAIL`, `ADMIN_PASSWORD` | ✅ | 빈 DB에서 처음 만들 관리자 계정 |
+| `WEB_BIND`, `WEB_PORT` | | 웹을 열 주소와 포트. 기본 `127.0.0.1:3000` |
+| `UNIFI_URL` | ✅ | UniFi의 HTTPS 주소. 인증서 이름과 같아야 합니다. 예: `https://unifi.local` |
+| `UNIFI_CONNECT_IP` | | `UNIFI_URL`의 이름 대신 실제로 연결할 IP |
+| `UNIFI_API_KEY` | ✅ | Network API 키 |
+| `UNIFI_SITE`, `UNIFI_SITE_UUID` | ✅ | 사이트의 `internalReference`와 `id` |
+| `UNIFI_CA_HOST_FILE` | | Docker 호스트에 있는 UniFi 인증서 PEM의 절대 경로 (`docker-compose.ca.yml`과 함께) |
+| `COMPOSE_FILE` | | `docker-compose.yml:docker-compose.ca.yml`로 두면 CA 오버라이드를 항상 포함 |
+| `UNIFI_WIRED_SCOPE`, `UNIFI_WIRELESS_SCOPE` | | API 카운터를 표시할 범위. 기본 `reported` |
+| `UNIFI_WIRED_RX_DIRECTION`, `UNIFI_WIRELESS_RX_DIRECTION` | | API의 `rx`를 업로드로 볼지 다운로드로 볼지. 기본 `upload` |
+| `COLLECT_INTERVAL_MS` | | API 수집 주기. 기본 30000 (10초~1시간) |
+| `UNIFI_AGENT_URL`, `UNIFI_AGENT_TOKEN`, `UNIFI_AGENT_CERT_SHA256` | | 게이트웨이 에이전트 연결. 셋 다 쓰거나 모두 비웁니다. |
+
+---
+
+## 운영
+
+### 업데이트
 
 ```sh
-docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml --profile collector up -d --build db migrate web collector
+docker compose pull
+docker compose up -d
 ```
 
-Compose의 첫 실행은 `.env`의 `ADMIN_EMAIL`과 `ADMIN_PASSWORD`로 빈 DB에 관리자를 생성합니다. 이 호스트에는 로컬 관리자 계정이 이미 생성되어 있어 초기화 작업은 계정을 변경하지 않습니다. 자격 정보는 저장소 밖 또는 Git에서 제외한 로컬 파일에만 둡니다.
+DB 구조 변경은 `migrate` 서비스가 시작할 때 자동으로 적용합니다. 게이트웨이 에이전트는 게이트웨이에서 `/data/unifi-traffic-agent/manage.sh update`로 올립니다.
 
-## 화면 자동 갱신
-
-대시보드에 로그인한 동안 웹은 인증된 `/api/overview/events` 연결로 PostgreSQL 수집 완료 신호를 받습니다. 새 수집 결과가 DB에 커밋되면 개요·목록·상세·장비·상태 화면이 최신 DB 값을 다시 읽습니다. 브라우저 탭을 숨기면 연결을 닫고 다시 볼 때 재연결하며, 연결할 수 없으면 주기적 조회를 사용합니다. 이것은 수집 주기마다 화면을 갱신하는 기능이며 장비에서 실시간 패킷을 직접 측정하는 기능은 아닙니다. 역방향 프록시를 사용한다면 이 경로의 스트리밍 응답 버퍼링을 끄세요. 웹은 `X-Accel-Buffering: no` 헤더를 보냅니다.
-
-게이트웨이 에이전트가 연결되어 있으면 같은 연결로 1초마다 실시간 속도도 받습니다. 수집기가 에이전트에서 받은 값을 PostgreSQL `utm_live` 알림으로 전달하고, 개요와 클라이언트 상세가 최근 1분 속도를 표시합니다.
-
-## 게이트웨이 에이전트
-
-[agent/](agent/README.md)는 UCG에 설치하는 Go 프로그램입니다. conntrack 카운터로 클라이언트별 인터넷·LAN 트래픽을 세고, 수집기가 WebSocket(WSS)으로 연결하면 실시간 데이터를 보냅니다. 연결이 없는 동안에는 5분 기록을 게이트웨이의 `/data`에 7일까지 보관합니다. 수집기가 다시 연결하면 빠진 구간을 채웁니다. 설치 파일과 설정도 `/data`에 두므로 재부팅과 펌웨어 업데이트 후에도 유지됩니다.
-
-UCG에서 설치 스크립트를 실행한 뒤, 출력된 값을 수집기의 `UNIFI_AGENT_URL`, `UNIFI_AGENT_TOKEN`, `UNIFI_AGENT_CERT_SHA256`에 넣습니다. 측정 범위, 관리 명령, 프로토콜은 [agent/README.md](agent/README.md)에 정리했습니다.
+### 백업과 복원
 
 ```sh
-curl -sSLf https://raw.githubusercontent.com/aroxu/unifi-traffic-monitr/main/agent/install.sh | sh
+# 백업
+docker compose exec -T db pg_dump -U traffic -d traffic -Fc > "traffic-$(date +%Y%m%d).dump"
+
+# 복원 (현재 DB를 백업 시점으로 되돌립니다)
+docker compose stop web collector
+docker compose exec -T db pg_restore --clean --if-exists --no-owner --no-privileges \
+  -U traffic -d traffic < traffic-YYYYMMDD.dump
+docker compose up -d web collector
 ```
 
-## 백업과 복원
+### 다른 기기에서 접속하기
 
-`deploy/backup.sh`는 Docker PostgreSQL의 압축 덤프를 만들고 목차를 검증합니다. 기존 파일은 덮어쓰지 않으며 권한은 소유자 전용입니다.
+기본 설정은 Docker 호스트 자신(`127.0.0.1`)에서만 열립니다. LAN에서 접속하려면 `WEB_BIND=0.0.0.0`으로 바꾸고, `BETTER_AUTH_URL`을 브라우저에 입력할 주소와 똑같이 맞춥니다. 외부에 공개한다면 HTTPS 역방향 프록시 뒤에 두세요. 실시간 갱신은 `/api/overview/events`의 스트리밍 응답(SSE)을 쓰므로 프록시에서 이 경로의 버퍼링을 꺼야 합니다. 웹은 `X-Accel-Buffering: no` 헤더를 보냅니다.
+
+### 로그
 
 ```sh
-./deploy/backup.sh ".local/traffic-$(date +%Y%m%d-%H%M%S).dump"
+docker compose logs -f collector   # 수집 결과, 에이전트 연결
+docker compose logs -f web
 ```
 
-복원 시 웹과 수집기를 멈춘 뒤 해당 덤프를 PostgreSQL에 넣습니다. 다음 명령의 파일 경로를 실제 백업 파일로 바꿉니다. 복원은 현재 DB 내용을 백업 시점으로 되돌립니다. 동일 덤프의 빈 DB 복원과 `--clean` 재복원을 별도 임시 컨테이너에서 확인했습니다.
+---
+
+## 문제 해결
+
+### 인증서 오류
+
+로그의 `Collector cycle failed: <코드>` 또는 **상태·설정 → 최근 수집**의 코드를 확인하세요.
+
+| 코드 / 메시지 | 원인 | 해결 |
+| --- | --- | --- |
+| `Cannot read UNIFI_CA_FILE ...` 또는 `ENOENT` | `UNIFI_CA_FILE`에 호스트 경로를 넣었거나 오버라이드가 빠짐 | `.env`에서 `UNIFI_CA_FILE`을 지우고 `UNIFI_CA_HOST_FILE`과 `COMPOSE_FILE`을 설정합니다. |
+| `UNIFI_CA_HOST_FILE ... is not a PEM certificate` | 파일이 비었거나 형식이 다름 | 1단계로 다시 받습니다. 파일 첫 줄이 `-----BEGIN CERTIFICATE-----`여야 합니다. |
+| `Set UNIFI_CA_HOST_FILE to an existing PEM file` (compose 오류) | 변수가 비어 있음 | 절대 경로를 넣습니다. |
+| `bind source path does not exist` (compose 오류) | 호스트에 그 경로의 파일이 없음 | `ls -l "$UNIFI_CA_HOST_FILE"`로 경로를 확인합니다. |
+| `tls_hostname_mismatch` | `UNIFI_URL`의 호스트가 인증서 이름 목록에 없음 (예: IP 주소) | `UNIFI_URL=https://unifi.local`과 `UNIFI_CONNECT_IP=<IP>`로 바꿉니다. |
+| `tls_untrusted_certificate` | CA 파일이 연결되지 않았거나 게이트웨이 인증서가 바뀜 | `docker compose config \| grep unifi-ca`로 오버라이드 포함 여부를 보고, 인증서를 다시 받습니다. |
+| `tls_certificate_expired` | 게이트웨이 인증서 만료 | UniFi에서 인증서를 갱신하고 파일을 다시 받습니다. |
+| `tls_certificate_not_yet_valid` | 호스트나 게이트웨이의 시계가 틀림 | 두 장비의 NTP 설정을 확인합니다. |
+| `UniFi URL must use HTTPS` | `UNIFI_URL`이 `http://` | `https://`로 바꿉니다. |
+
+### 연결·인증 오류
+
+| 코드 | 원인 | 해결 |
+| --- | --- | --- |
+| `dns_lookup_failed` | `unifi.local`을 찾지 못함 | `UNIFI_CONNECT_IP`를 지정합니다. |
+| `connection_refused`, `host_unreachable`, `timeout` | 게이트웨이에 연결되지 않음 | 호스트에서 `curl` 확인 명령(빠른 시작 4단계)을 실행해 봅니다. 호스트에서는 되는데 컨테이너에서 안 되면 Docker 브리지가 LAN에 닿지 않는 환경입니다. 수집기에 `network_mode: host`를 지정하고, DB 접속은 호스트 포트로 연결합니다. 예시는 [deploy/compose.local.yaml](deploy/compose.local.yaml)을 참고하세요. |
+| `http_401`, `http_403` | API 키가 틀렸거나 권한이 없음 | API 키를 새로 만듭니다. |
+| `http_404` | 주소나 사이트 이름이 다름 | `UNIFI_URL`이 콘솔 주소인지, `UNIFI_SITE`가 `internalReference`와 같은지 확인합니다. |
+| `Site UUID and internal name do not match` | `UNIFI_SITE_UUID`와 `UNIFI_SITE`가 다른 사이트를 가리킴 | 4단계의 `id`와 `internalReference`를 같은 항목에서 가져옵니다. |
+
+### 에이전트 오류
+
+| 증상 | 해결 |
+| --- | --- |
+| 로그에 `certificate fingerprint mismatch` | 에이전트 인증서가 바뀌었습니다. `manage.sh info`의 `Certificate` 값을 다시 넣습니다. |
+| 로그에 `HTTP 401` 또는 `HTTP 429` | 토큰이 틀렸습니다. 429는 1분에 5번 이상 실패한 경우라 잠시 뒤 다시 시도됩니다. |
+| 실시간 카드가 "에이전트 연결 끊김" | 게이트웨이에서 `manage.sh status`로 실행 여부를 보고, 수집 서버에서 게이트웨이의 8790 포트로 연결되는지 확인합니다. |
+
+---
+
+## 개발
+
+<details>
+<summary>소스에서 실행하기</summary>
+
+Node.js 24, pnpm 12.4.1, PostgreSQL 17이 필요합니다.
 
 ```sh
-docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml --profile collector stop web collector
-docker compose --env-file .env -f deploy/compose.yaml exec -T db \
-  pg_restore --clean --if-exists --no-owner --no-privileges -U traffic -d traffic < .local/traffic-BACKUP.dump
-docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml --profile collector up -d web collector
+git clone https://github.com/aroxu/unifi-traffic-monitr.git
+cd unifi-traffic-monitr
+cp .env.example .env        # DATABASE_URL, UNIFI_* 등 채우기
+pnpm install
+set -a; source .env; set +a
+pnpm db:migrate
+pnpm admin:create --email admin@example.com   # 비밀번호는 대화형으로 입력
+pnpm dev                                      # 웹 http://localhost:3000
+pnpm --filter @utm/collector dev              # 수집기
 ```
 
-## 수집 관찰
+소스로 실행할 때 `UNIFI_CA_FILE`에는 호스트의 PEM 경로를 그대로 적습니다.
 
-`deploy/observe.sh`는 로컬 Compose PostgreSQL을 읽기 전용으로 조회합니다. 관찰 시작 시각부터 성공·오류 수집 횟수, 시작·끝 경계까지 포함한 최장 공백, 최신 성공 경과 시간, 샘플 수, DB 크기를 확인할 수 있습니다. 이 호스트의 24시간 관찰 기준은 2026-09-26 02:52 UTC입니다.
+</details>
+
+<details>
+<summary>저장소의 Compose로 실행하기</summary>
 
 ```sh
-./deploy/observe.sh 2026-09-26T02:52:00Z
+# 로컬에서 이미지를 빌드
+docker compose --env-file .env -f deploy/compose.yaml --profile collector up -d --build
+
+# 공개 이미지를 사용 (.env에 UTM_IMAGE=ghcr.io/aroxu/unifi-traffic-monitr:latest)
+docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.ghcr.yaml --profile collector up -d
 ```
 
-24시간 판정은 2026-09-27 02:52 UTC 이후에 같은 명령으로 확인합니다.
+Docker 브리지에서 LAN에 닿지 않는 호스트는 [deploy/compose.local.yaml](deploy/compose.local.yaml)을 추가합니다. 수집기와 웹을 호스트 네트워크로 실행하고, DB는 `127.0.0.1:5433`에만 공개합니다. 백업은 `./deploy/backup.sh <파일>`, 수집 공백 관찰은 `./deploy/observe.sh <시작 시각>`으로 합니다.
 
-## 현재 제한
+</details>
 
-- 읽기 전용 `pnpm --filter @utm/unifi dpi:poc`은 내부 v2 DPI 앱 사용량의 클라이언트 수와 수신·송신 합계만 출력합니다. 실행 전에 `.env`를 환경으로 불러오고 `UNIFI_CA_FILE`을 실제 CA 경로로 지정한 뒤 `DPI_START`·`DPI_END`를 ISO 8601 시각으로 설정합니다. 최대 조회 범위는 24시간입니다. `DPI_CLIENT_MAC`을 주면 그 클라이언트만 조회하며 MAC은 출력하지 않습니다. 이 값의 기간 경계와 인터넷 전용 범위는 아직 검증되지 않았으므로 운영 집계에는 연결하지 않았습니다. 실측은 [POC_RESULTS.md](./POC_RESULTS.md)를 참고합니다.
-- 실장비 `traffic-flows`의 완료 세션 기록은 출발지·목적지와 바이트를 제공하지만, 통제된 8 MB 인터넷 다운로드 두 차례에서 해당 클라이언트의 출발지 `outgoing` 흐름 합은 각각 약 0.62 MB와 0.33 MB에 그쳤습니다. 목적지 MAC 기준 흐름도 두 번째 시험에서 0건이었습니다. 이 로그를 정확한 인터넷 사용량으로 합산하지 않습니다. 기록 조건과 한계는 [POC_RESULTS.md](./POC_RESULTS.md)에 정리했습니다.
-- 수집기는 유선·무선 원본 카운터를 정수로 저장하고 연결 세션·리셋에 따른 품질을 기록합니다. `reported` 매핑은 컨트롤러가 보고한 카운터의 정상 차분만 새 사용량 구간과 차트에 반영하며 인터넷/LAN 범위를 확정하지 않습니다.
-- UniFi API 요청은 자동 리디렉션을 따르지 않습니다. 로그인 페이지 등으로 이동시키는 3xx 응답은 수집 오류로 기록해 API 키·쿠키가 다른 주소로 전달되지 않게 합니다.
-- 무선 클라이언트 한 대의 직접 LAN ICMP/단방향 UDP 시험에서 원본 `tx_bytes`가 기기로 내려가는 트래픽과 함께 증가했고, `rx_bytes`는 반대 방향 응답과 함께 증가했습니다. 이 무선 원본을 인터넷 전용으로 표시할 수 없습니다. 무선 인터넷 전송과 유선 LAN 범위는 추가 검증이 필요합니다.
-- 온라인 여부는 공식 연결 클라이언트 목록으로 판정합니다. 내부 통계 목록에만 남은 오프라인 클라이언트의 카운터는 새 사용량으로 기록하지 않으며, 재연결 후 첫 샘플은 기준값으로 처리합니다.
-- 완전히 검증된 공식 연결 목록에서 클라이언트가 빠지면 그 수집 사이클에서 오프라인으로 전환하고 체크포인트를 지웁니다. 잠깐 끊겼다가 재연결한 첫 카운터도 새 기준값으로 처리합니다.
-- 공식 연결 목록과 내부 통계의 유선/무선 유형이 어긋나면 해당 내부 카운터를 건너뛰고 기존 체크포인트를 지웁니다. 유형이 다시 일치한 첫 샘플은 새 기준값으로 처리합니다.
-- 연결 장비가 바뀌면 내부 응답의 연결 시각이 그대로여도 그 클라이언트의 원본 카운터를 새 기준값으로 처리합니다. AP 로밍 전후의 바이트를 한 구간으로 합치지 않습니다.
-- 무선 클라이언트 상세에는 컨트롤러가 보고한 마지막 `signal`·`noise`를 dBm으로 표시합니다. 연결이 끊기거나 내부 통계가 빠지면 값을 지웁니다. 원본 자체의 측정 시각은 없어 화면에는 수집 시각을 표시하며, 실시간 신호나 인터넷 사용량으로 해석하지 않습니다. [UniFi의 클라이언트 신호 단위 설명](https://help.ui.com/hc/en-us/articles/221321728-Understanding-and-Implementing-Minimum-RSSI)을 참고했습니다.
-- 연결 방식별 `UNIFI_*_SCOPE=reported`와 `UNIFI_*_RX_DIRECTION=upload`를 함께 설정하면 API 카운터의 새 기준값을 잡고 이후 정상 차분을 `traffic_intervals`에 저장합니다. 과거 `unknown` 원본은 범위를 소급하여 추정하지 않습니다. 실제 범위를 확인한 경우에만 `internet`, `lan`, `combined`로 설정합니다.
-- 내부 클라이언트 목록은 단일 응답에서 읽고 `meta.rc='ok'`를 요구합니다. 응답에 `count`나 `totalCount`가 있으면 배열 길이와 일치해야 합니다. 이 장비의 응답 메타데이터에는 `rc`만 있고 건수는 없습니다. `offset`·`start`·`page`와 `limit=1`을 조합한 읽기 전용 시험에서도 모두 기본 응답과 같은 44행을 반환해 해당 매개변수로는 페이지를 나눌 수 없었습니다. 같은 시각 공식 연결 목록 44대와 MAC 집합이 일치했습니다. 더 많은 클라이언트에서 서버 측 상한이 있는지는 확인되지 않았습니다.
-- 검증된 구간은 UTC 5분·1시간 롤업에 바이트 합계를 보존합니다. 관측 시간은 수집 구간 전체를 한 번 초 단위로 반올림해 버킷에 나눕니다. 기본 보존 기간은 상세 구간·원본 7일, 5분 롤업 90일, 시간 롤업 365일입니다. 재집계가 필요한 이전 구간은 한 번만 반영하고, 롤업이 반영된 상세 구간만 정리합니다. 기간 조회는 버킷 양끝을 포함하므로 화면에 추정 범위를 안내합니다.
-- 클라이언트 상세의 사용 가능한 범위는 관측 시간이 있는 롤업에서만 선택합니다. 백필을 기다리는 상세 구간만 존재할 때에는 차트가 읽을 수 없는 범위를 먼저 표시하지 않습니다.
-- 동일 카운터의 수집 공백이 기본 10분(또는 설정한 수집 주기의 10배)을 넘으면 알 수 없는 전송량은 사용량에 더하지 않고 `gap`으로 기록합니다. 이후 첫 샘플을 새 기준값으로 사용합니다.
-- PostgreSQL의 유휴 연결이 끊겨도 수집기 프로세스는 유지되고 다음 사이클에서 재연결합니다. 별도 시험 DB를 중단·복구해 재수집과 상세·롤업 합계 일치를 확인했습니다.
-- 보존 기간은 `/settings`에서 변경할 수 있으며 `원본 ≤ 5분 ≤ 시간` 순서를 지켜야 합니다. 검증된 구간이 있는 환경에서는 개요의 24시간 차트·상위 클라이언트와 클라이언트 상세 기간 차트를 표시합니다. 실제 원본 관측 시간이 없어 버킷 내 전송 시각은 추정입니다.
-- 개요의 사이트·클라이언트·최신 수집·원본 샘플·트래픽 조회는 하나의 PostgreSQL 읽기 스냅샷에서 처리해 수집 사이클이 조회 도중 커밋되어도 서로 다른 세대의 값을 섞지 않습니다.
-- 개요의 원본 카운터 카드에는 공식 연결 클라이언트 중 해당 수집 회차에 원본 카운터가 없는 대수를 함께 표시합니다. 내부 통계 누락·연결 방식 불일치·미지원 등 원인은 이 숫자만으로 단정하지 않습니다.
-- 백업/복원과 롤업·보존은 별도 PostgreSQL에서 시험했습니다. 24시간 실장비 관찰은 남아 있습니다. 유선 일반 LAN 범위와 무선 인터넷 범위는 검증하지 않았으며 운영의 `reported` 값을 인터넷 전용으로 표시하지 않습니다. 로그인→필터→상세 흐름의 데스크톱·모바일 Playwright 테스트는 통과했습니다.
+<details>
+<summary>테스트</summary>
+
+```sh
+pnpm typecheck
+pnpm test                                             # 단위 테스트
+DB_INTEGRATION=1 DATABASE_URL=postgres://... pnpm test  # PostgreSQL 통합 테스트 (별도 시험 DB)
+pnpm --filter @utm/web e2e                            # Playwright (E2E_ADMIN_EMAIL, E2E_ADMIN_PASSWORD 필요)
+cd agent && go vet ./... && go test ./...             # 게이트웨이 에이전트
+```
+
+통합 테스트는 테이블에 시험 데이터를 넣으므로 운영 DB가 아닌 별도 DB를 사용하세요.
+
+</details>
+
+### 프로젝트 구조
+
+```text
+apps/web          Next.js 대시보드와 API
+apps/collector    UniFi API·에이전트 수집기
+packages/db       Drizzle 스키마와 마이그레이션
+packages/unifi    UniFi API 클라이언트
+packages/metrics  카운터 차분과 버킷 분할
+agent/            UCG에 설치하는 Go 에이전트
+examples/ghcr     공개 이미지 실행 예시
+deploy/           저장소용 Compose, Dockerfile, 백업·관찰 스크립트
+```
+
+## 관련 문서
+
+- [agent/README.md](agent/README.md): 게이트웨이 에이전트의 측정 방식, 관리 명령, 프로토콜
+- [POC_RESULTS.md](POC_RESULTS.md): 실장비 측정과 검증 결과
+- [RESEARCH.md](RESEARCH.md): UniFi API와 수집 방식 조사
+- [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md): 초기 구현 계획

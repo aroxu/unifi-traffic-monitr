@@ -17,6 +17,25 @@ export function runStatus(status: string | null | undefined): string {
   if (!status) return '시작 전';
   return status === 'measured' ? '사용량 수집 중' : status === 'raw_only' ? '트래픽 정보 수집 중' : status === 'identity_only' ? '연결 정보 수집 중' : status === 'error' ? '수집 오류' : status;
 }
+const errorHints: Record<string, string> = {
+  tls_hostname_mismatch: '인증서 이름 불일치 · UNIFI_URL 확인',
+  tls_untrusted_certificate: '신뢰할 수 없는 인증서 · CA 파일 확인',
+  tls_certificate_expired: '인증서 만료',
+  tls_certificate_not_yet_valid: '인증서 유효 기간 전 · 시계 확인',
+  connection_refused: '연결 거부',
+  connection_reset: '연결 끊김',
+  dns_lookup_failed: '주소를 찾지 못함 · UNIFI_CONNECT_IP 확인',
+  host_unreachable: '장비에 도달할 수 없음',
+  timeout: '응답 시간 초과',
+  http_401: 'API 키 확인',
+  http_403: 'API 키 권한 확인',
+  http_404: '주소 또는 사이트 확인',
+  db_write_failed: 'DB 저장 실패'
+};
+/** Short Korean explanation for a collector error code. */
+export function errorHint(code: string | null | undefined): string | null {
+  return code ? errorHints[code] ?? null : null;
+}
 /** Format bytes per second as a network bit rate. */
 export function bitRate(bytesPerSecond: number): string {
   const bits = Math.max(0, bytesPerSecond) * 8;

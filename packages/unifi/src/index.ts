@@ -21,6 +21,16 @@ export class UnifiClient {
     if (!/^[a-zA-Z0-9_-]+$/.test(config.site)) throw new Error('Invalid internal site name');
     if (config.connectIp && !isIP(config.connectIp)) throw new Error('UNIFI_CONNECT_IP must be an IP address');
     if (config.connectIp || config.caFile) {
+      let ca: string | undefined;
+      if (config.caFile) {
+        try {
+          ca = readFileSync(config.caFile, 'utf8');
+        } catch (error) {
+          throw new Error(`Cannot read UNIFI_CA_FILE ${config.caFile}. This path is read inside the collector container; ` +
+            'mount the PEM file there (for example with docker-compose.ca.yml and UNIFI_CA_HOST_FILE).', {cause: error});
+        }
+        if (!ca.includes('-----BEGIN CERTIFICATE-----')) throw new Error(`UNIFI_CA_FILE ${config.caFile} is not a PEM certificate`);
+      }
       const lookup: LookupFunction | undefined = config.connectIp
         ? (_hostname, options, callback) => {
           const address = config.connectIp!;
@@ -29,7 +39,7 @@ export class UnifiClient {
         }
         : undefined;
       const connect = {
-        ...(config.caFile ? {ca: readFileSync(config.caFile, 'utf8')} : {}),
+        ...(ca ? {ca} : {}),
         ...(lookup ? {lookup} : {})
       };
       this.dispatcher = new Agent({connect});
