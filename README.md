@@ -230,13 +230,12 @@ COMPOSE_FILE=docker-compose.yml:docker-compose.ca.yml
 
 `UNIFI_CONNECT_IP`가 있으면 `unifi.local`을 DNS에서 찾지 않고 지정한 IP로 연결합니다. 접속 주소와 인증서 이름을 따로 맞출 수 있어서, 호스트의 `/etc/hosts`를 고칠 필요가 없습니다.
 
-`docker-compose.ca.yml`은 호스트 파일을 컨테이너 안의 고정 경로에 읽기 전용으로 연결합니다.
+`docker-compose.ca.yml`은 호스트의 파일을 컨테이너 안의 고정 경로에 읽기 전용으로 연결합니다.
 
-```text
-Docker 호스트                                     collector 컨테이너
-UNIFI_CA_HOST_FILE=/home/you/.../unifi-ca.pem ──▶ /run/secrets/unifi-ca.pem (읽기 전용)
-                                                  UNIFI_CA_FILE=/run/secrets/unifi-ca.pem (자동 설정)
-```
+| 위치 | 경로 | 누가 정하나 |
+| --- | --- | --- |
+| Docker 호스트 | `UNIFI_CA_HOST_FILE` 값 (예: `/home/you/unifi-traffic-monitor/unifi-ca.pem`) | 사용자가 `.env`에 적습니다. |
+| collector 컨테이너 | `/run/secrets/unifi-ca.pem` (읽기 전용) | 오버라이드가 연결하고 `UNIFI_CA_FILE`로 알려 줍니다. |
 
 > [!IMPORTANT]
 > `.env`에는 **`UNIFI_CA_HOST_FILE`만** 적습니다. `UNIFI_CA_FILE`은 컨테이너 **안의** 경로라서 오버라이드가 자동으로 설정합니다. `UNIFI_CA_FILE`에 호스트 경로를 적으면 컨테이너가 파일을 찾지 못해 `Cannot read UNIFI_CA_FILE`(예전 버전은 `ENOENT`) 오류로 멈춥니다.
@@ -415,7 +414,7 @@ docker compose logs -f web
 | 코드 / 메시지 | 원인 | 해결 |
 | --- | --- | --- |
 | `Cannot read UNIFI_CA_FILE ...` 또는 `ENOENT` | `UNIFI_CA_FILE`에 호스트 경로를 넣었거나 오버라이드가 빠짐 | `.env`에서 `UNIFI_CA_FILE`을 지우고 `UNIFI_CA_HOST_FILE`과 `COMPOSE_FILE`을 설정합니다. |
-| `UNIFI_CA_HOST_FILE ... is not a PEM certificate` | 파일이 비었거나 형식이 다름 | 1단계로 다시 받습니다. 파일 첫 줄이 `-----BEGIN CERTIFICATE-----`여야 합니다. |
+| `UNIFI_CA_FILE ... is not a PEM certificate` | 파일이 비었거나 형식이 다름 | 1단계로 다시 받습니다. 파일 첫 줄이 `-----BEGIN CERTIFICATE-----`여야 합니다. |
 | `Set UNIFI_CA_HOST_FILE to an existing PEM file` (compose 오류) | 변수가 비어 있음 | 절대 경로를 넣습니다. |
 | `bind source path does not exist` (compose 오류) | 호스트에 그 경로의 파일이 없음 | `ls -l "$UNIFI_CA_HOST_FILE"`로 경로를 확인합니다. |
 | `tls_hostname_mismatch` | `UNIFI_URL`의 호스트가 인증서 이름 목록에 없음 (예: IP 주소) | `UNIFI_URL=https://unifi.local`과 `UNIFI_CONNECT_IP=<IP>`로 바꿉니다. |
