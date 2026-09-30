@@ -18,11 +18,8 @@ import (
 
 const token = "0123456789abcdef0123456789abcdef"
 
-func setup(t *testing.T) (*httptest.Server, *Hub, *store.Store, context.CancelFunc) {
-	st, err := store.Open(t.TempDir(), 7*24*time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
+func setup(t *testing.T) (*httptest.Server, *Hub, *store.Memory, context.CancelFunc) {
+	st := store.NewMemory(24 * time.Hour)
 	hub := NewHub()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -73,9 +70,7 @@ func TestReplayThenLiveOrder(t *testing.T) {
 	start := time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)
 	for i := 0; i < 3; i++ {
 		b := protocol.Bucket{Start: start.Add(time.Duration(i) * 5 * time.Minute), Final: true, CoverageSeconds: 300}
-		if err := st.AppendFinal(b); err != nil {
-			t.Fatal(err)
-		}
+		st.AppendFinal(b)
 	}
 	c, _, err := dial(t, srv, "Bearer "+token)
 	if err != nil {
@@ -112,8 +107,12 @@ func TestReplayThenLiveOrder(t *testing.T) {
 	if live := read(t, c); live["type"] != "live" {
 		t.Fatalf("unexpected live message %v", live)
 	}
-	// Stopping the agent must send a close frame, not drop the connection.
+	// A message queued while stopping is delivered before the close frame.
+	hub.Broadcast([]byte(`{"type":"bucket","final":false}`))
 	stop()
+	if last := read(t, c); last["type"] != "bucket" {
+		t.Fatalf("queued message lost at shutdown: %v", last)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, _, err = c.Read(ctx)

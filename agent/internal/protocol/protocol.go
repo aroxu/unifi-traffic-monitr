@@ -70,21 +70,14 @@ func FromAccount(b *account.Bucket, final bool) Bucket {
 	return out
 }
 
-// ToAccount converts a stored bucket back into accumulator form.
-func (b Bucket) ToAccount() *account.Bucket {
-	out := &account.Bucket{Start: b.Start.UTC(), Coverage: time.Duration(b.CoverageSeconds) * time.Second,
-		Subjects: make(map[string]*account.Counters, len(b.Subjects))}
-	for _, s := range b.Subjects {
-		out.Subjects[s.MAC] = &account.Counters{InternetUp: uint64(s.Internet.Up), InternetDown: uint64(s.Internet.Down),
-			LANUp: uint64(s.LAN.Up), LANDown: uint64(s.LAN.Down)}
-	}
-	return out
-}
-
+// Hello opens a stream. RunID changes on every agent start: bucket values
+// restart from zero in a new run, so collectors keep each run's values
+// separately and add them.
 type Hello struct {
 	Type           string     `json:"type"`
 	Protocol       int        `json:"protocol"`
 	AgentID        string     `json:"agentId"`
+	RunID          string     `json:"runId"`
 	Version        string     `json:"version"`
 	Now            time.Time  `json:"now"`
 	EarliestBucket *time.Time `json:"earliestBucket"`

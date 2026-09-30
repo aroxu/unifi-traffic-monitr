@@ -18,7 +18,6 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/aroxu/unifi-traffic-monitr/agent/internal/protocol"
-	"github.com/aroxu/unifi-traffic-monitr/agent/internal/store"
 )
 
 const (
@@ -127,13 +126,20 @@ func (h *Hub) signalReady() {
 // Info identifies the agent in hello messages.
 type Info struct {
 	AgentID string
+	RunID   string
 	Version string
+}
+
+// Ledger holds buckets a reconnecting consumer may have missed.
+type Ledger interface {
+	Earliest() *time.Time
+	Replay(since *time.Time, fn func(protocol.Bucket) error) error
 }
 
 // Server authenticates consumers and replays stored buckets.
 type Server struct {
 	token    []byte
-	store    *store.Store
+	store    Ledger
 	hub      *Hub
 	info     Info
 	base     context.Context
@@ -142,7 +148,9 @@ type Server struct {
 	streams  sync.WaitGroup
 }
 
-func New(base context.Context, token string, st *store.Store, hub *Hub, info Info) *Server {
+// New creates a server. Cancelling base closes every stream after queued
+// messages have been written.
+func New(base context.Context, token string, st Ledger, hub *Hub, info Info) *Server {
 	return &Server{token: []byte(token), store: st, hub: hub, info: info, base: base, failures: map[string][]time.Time{}}
 }
 
@@ -252,12 +260,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(s.base)
 	defer cancel()
 
-	earliest, err := s.store.Earliest()
-	if err != nil {
-		log.Printf("read ledger bounds: %v", err)
-	}
-	hello := protocol.Hello{Type: "hello", Protocol: protocol.Version, AgentID: s.info.AgentID,
-		Version: s.info.Version, Now: time.Now().UTC(), EarliestBucket: earliest}
+	hello := protocol.Hello{Type: "hello", Protocol: protocol.Version, AgentID: s.info.AgentID, RunID: s.info.RunID,
+		Version: s.info.Version, Now: time.Now().UTC(), EarliestBucket: s.store.Earliest()}
 	if err := writeJSON(ctx, conn, hello); err != nil {
 		return
 	}
@@ -321,6 +325,18 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-s.base.Done():
+			// Send what the agent queued while stopping, such as the final
+			// partial bucket, before closing.
+			for drained := false; !drained; {
+				select {
+				case msg := <-c.send:
+					if err := writeRaw(peer, conn, msg); err != nil {
+						return
+					}
+				default:
+					drained = true
+				}
+			}
 			conn.Close(websocket.StatusGoingAway, "agent stopping")
 			return
 		case <-peer.Done():

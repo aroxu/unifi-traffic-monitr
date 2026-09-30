@@ -100,12 +100,15 @@ export const agentBuckets = pgTable('agent_buckets', {
   subject: text('subject').notNull(),
   clientId: uuid('client_id').references(() => clients.id),
   bucketStart: t('bucket_start').notNull(),
+  // Agent process run. A restarted agent counts the open bucket from zero, so
+  // each run keeps its own row and readers add them. Empty for agents before 0.2.0.
+  runId: text('run_id').notNull().default(''),
   scope: text('scope').notNull(), direction: text('direction').notNull(),
   bytes: bytes('bytes').notNull(),
   coverageSeconds: integer('coverage_seconds').notNull(),
   final: boolean('final').notNull(),
   receivedAt: t('received_at').notNull().defaultNow(),
-}, (table) => [uniqueIndex('agent_buckets_key').on(table.siteId, table.subject, table.bucketStart, table.scope, table.direction),
+}, (table) => [uniqueIndex('agent_buckets_key').on(table.siteId, table.subject, table.bucketStart, table.scope, table.direction, table.runId),
   index('agent_buckets_final_idx').on(table.siteId, table.final, table.bucketStart),
   index('agent_buckets_unresolved_idx').on(table.siteId, table.bucketStart).where(sql`client_id IS NULL`)]);
 

@@ -1,7 +1,8 @@
 #!/bin/sh
 # Manage the UniFi traffic monitor agent on UniFi OS.
-# Everything lives in /data so the agent survives reboots and firmware
-# updates. The systemd unit is copied into /etc as a plain file, and a
+# Program files and settings live in /data so the agent survives reboots and
+# firmware updates. The running agent keeps traffic data in memory and never
+# writes to /data. The systemd unit is copied into /etc as a plain file, and a
 # /data/on_boot.d hook repairs it if it is ever missing.
 set -eu
 
@@ -57,7 +58,7 @@ ensure_config() {
       cat > "$ENV_FILE" <<EOF
 AGENT_LISTEN=$listen
 AGENT_TOKEN=$token
-AGENT_RETENTION_DAYS=7
+AGENT_BUFFER_HOURS=24
 AGENT_LIVE_INTERVAL_MS=1000
 AGENT_IDLE_INTERVAL_MS=10000
 AGENT_CLIENT_INTERFACES=br*
@@ -70,6 +71,25 @@ EOF
     "$BIN" gen-cert -data-dir "$AGENT_ROOT" -hosts "$(listen_hosts)"
     echo "Created TLS certificate"
   fi
+  ensure_agent_id
+}
+
+# The agent reads this ID but cannot write it, so create it once here.
+ensure_agent_id() {
+  id_file="$AGENT_ROOT/state/agent-id"
+  [ -s "$id_file" ] && return 0
+  mkdir -p "$AGENT_ROOT/state"
+  (
+    umask 077
+    od -An -tx1 -N16 /dev/urandom | tr -d ' \n' > "$id_file.tmp"
+    echo >> "$id_file.tmp"
+  )
+  mv "$id_file.tmp" "$id_file"
+}
+
+# Versions before 0.2.0 kept five-minute buckets and a checkpoint on disk.
+remove_disk_buckets() {
+  rm -rf "$AGENT_ROOT/buckets" "$AGENT_ROOT/state/open-buckets.json" "$AGENT_ROOT/state/open-buckets.json.tmp"
 }
 
 # Copy the unit as a regular file. A symlink into /data could be unreadable
@@ -159,6 +179,15 @@ update_agent() {
     [ -f "$new/$f" ] && cp "$new/$f" "$AGENT_ROOT/$f.new" && mv "$AGENT_ROOT/$f.new" "$AGENT_ROOT/$f"
   done
   chmod 755 "$AGENT_ROOT/manage.sh" "$BIN"
+  rm -rf "$workdir"
+  trap - EXIT
+  # Finish with the new script so its setup steps apply.
+  exec "$AGENT_ROOT/manage.sh" finish-update
+}
+
+finish_update() {
+  ensure_agent_id
+  remove_disk_buckets
   install_unit
   systemctl restart "$UNIT"
   echo "Agent updated"
@@ -180,6 +209,7 @@ case "${1:-}" in
   install)
     check_platform
     ensure_config
+    remove_disk_buckets
     install_unit
     install_boot_hook
     systemctl restart "$UNIT"
@@ -195,9 +225,11 @@ case "${1:-}" in
   token) env_value AGENT_TOKEN ;;
   rotate-token) rotate_token ;;
   update) update_agent "${2:-latest}" ;;
+  finish-update) finish_update ;;
   uninstall) uninstall_agent "${2:-}" ;;
   on-boot)
     [ -f "$ENV_FILE" ] || exit 0
+    remove_disk_buckets
     install_unit
     systemctl start "$UNIT"
     ;;

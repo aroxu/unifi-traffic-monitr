@@ -116,6 +116,8 @@ export class AgentSession {
       });
       let chain: Promise<void> = Promise.resolve();
       let reason = '';
+      // Set by hello; every bucket on this connection belongs to that agent run.
+      const run = {id: ''};
       let idle: NodeJS.Timeout | undefined;
       const resetIdle = () => {
         clearTimeout(idle);
@@ -141,7 +143,7 @@ export class AgentSession {
           return;
         }
         if (msg.type === 'live') { void this.relay(siteId, msg); return; }
-        chain = chain.then(() => this.handle(ws, siteId, msg)).catch((error: unknown) => {
+        chain = chain.then(() => this.handle(ws, siteId, run, msg)).catch((error: unknown) => {
           reason ||= `storage: ${describe(error)}`;
           ws.terminate();
         });
@@ -156,9 +158,10 @@ export class AgentSession {
     });
   }
 
-  private async handle(ws: WebSocket, siteId: string, msg: Exclude<AgentMessage, {type: 'live'}>): Promise<void> {
+  private async handle(ws: WebSocket, siteId: string, run: {id: string}, msg: Exclude<AgentMessage, {type: 'live'}>): Promise<void> {
     switch (msg.type) {
       case 'hello': {
+        run.id = msg.hello.runId;
         const since = await this.withClient(async client => {
           await client.query(`INSERT INTO agent_status
               (site_id,connected,agent_id,agent_version,connected_at,earliest_available,last_error,updated_at)
@@ -174,13 +177,13 @@ export class AgentSession {
         return;
       }
       case 'buckets': {
-        const result = await this.withClient(client => ingestAgentBuckets(client, siteId, msg.items));
+        const result = await this.withClient(client => ingestAgentBuckets(client, siteId, msg.items, run.id));
         if (result.lastFinal) console.log(`Stored ${msg.items.length} gateway agent buckets through ${result.lastFinal.toISOString()}`);
         return;
       }
       case 'bucket': {
         await this.withClient(async client => {
-          await ingestAgentBuckets(client, siteId, [msg.bucket]);
+          await ingestAgentBuckets(client, siteId, [msg.bucket], run.id);
           if (msg.bucket.final) await client.query(`SELECT pg_notify('utm_collection', 'agent')`);
         });
         return;

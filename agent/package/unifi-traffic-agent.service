@@ -18,10 +18,11 @@ Nice=10
 CPUQuota=50%
 MemoryMax=128M
 NoNewPrivileges=yes
+# The agent keeps traffic data in memory. /data is read-only for it, so it
+# cannot wear the eMMC even by mistake.
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/data/unifi-traffic-agent
 CapabilityBoundingSet=CAP_NET_ADMIN
 RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
 LockPersonality=yes

@@ -388,3 +388,10 @@
 - 인증서 안내는 실장비로 확인한 사실을 반영했다. 기본 인증서는 `CN=unifi.local` 자체 서명이고, SAN에 LAN IP가 없으며, 원본은 `/data/unifi-core/config/unifi-core.crt`다. `openssl s_client`로 받은 파일과 원본의 지문이 같았다. `curl --cacert --resolve`로 사이트 목록을 조회하는 확인 명령과, IP 주소로 접속하면 이름 불일치로 실패하는 것도 확인했다. 예시 Compose의 빈 `UNIFI_CA_HOST_FILE`과 없는 경로에서 나오는 오류 문구를 실제로 재현해 문제 해결 표에 넣었다. 예시 `.env.example`에는 `COMPOSE_FILE` 사용 안내를 추가했다.
 - 수집기는 UniFi 요청 실패를 원인별 코드로 기록한다: `tls_hostname_mismatch`, `tls_untrusted_certificate`, `tls_certificate_expired`, `connection_refused`, `dns_lookup_failed` 등. 이전에는 모두 `fetch_validation_or_database_error`였다. IP 주소 URL, CA 없음, 닫힌 포트, 정상 설정의 실제 요청으로 각 코드를 확인했다. 컨테이너에 CA 파일이 없으면 마운트 방법을 알려주는 메시지로 시작을 멈춘다. 상태·설정 화면은 오류 코드 옆에 짧은 한국어 설명을 표시한다.
 - 타입 검사와 단위 테스트가 통과했다. 로컬 웹과 collector를 새 이미지로 교체했고, 정상 수집과 에이전트 재연결을 확인했다.
+
+## 2026-09-30: 에이전트 디스크 기록 제거
+
+- 게이트웨이 저장소가 eMMC라서 에이전트가 트래픽 기록을 디스크에 쓰지 않도록 바꿨다. 5분 JSONL 기록, 60초 체크포인트, 에이전트 ID 자동 저장을 없애고 확정 버킷은 메모리 버퍼(`AGENT_BUFFER_HOURS`, 기본 24시간)에만 둔다. 이전 `AGENT_RETENTION_DAYS`는 무시한다.
+- 디스크에는 설치·업데이트 때 만드는 설정, 인증서, `state/agent-id`만 남는다. systemd 유닛에서 `ReadWritePaths`를 지워 실행 중인 에이전트에게 `/data`가 읽기 전용이 되게 했다. `manage.sh`의 install·update·부팅 훅은 0.1.x가 남긴 `buckets/`와 체크포인트 파일을 지운다. `update`는 새 스크립트의 `finish-update`로 마무리한다. 통계 로그는 5분마다에서 1시간마다로 줄였다.
+- 에이전트는 시작할 때마다 새 `runId`를 hello에 보낸다. 정상 종료 때 마지막 조회 뒤 열린 버킷을 미확정 값으로 보내고, 서버는 대기 메시지를 모두 보낸 뒤 연결을 닫는다. collector는 `agent_buckets`에 `run_id`를 저장하고(마이그레이션 `0007`), 같은 버킷의 실행별 값을 더해 5분 롤업을 만든다.
+- Go gofmt·vet·테스트와 arm64 빌드, 전체 타입 검사가 통과했다. 분리된 PostgreSQL에서 collector 테스트 18건이 통과했고, 실행 A 미확정 1000바이트와 실행 B 확정 500바이트가 1500바이트·측정 290초·공백 1로 합쳐지고 재전송에도 변하지 않는 것을 확인했다. 로컬 collector·웹에 `0007`과 새 이미지를 적용했고, v0.1.2 에이전트와 계속 연결되는 것을 확인했다.

@@ -335,22 +335,6 @@ func (a *Accumulator) Touch(subjects []string, at time.Time) {
 	}
 }
 
-// Restore merges a checkpointed bucket into the open set.
-func (a *Accumulator) Restore(src *Bucket) {
-	b := a.bucket(src.Start)
-	b.Coverage += src.Coverage
-	if b.Coverage > BucketSize {
-		b.Coverage = BucketSize
-	}
-	for name, c := range src.Subjects {
-		dst := b.subject(name)
-		dst.InternetUp += c.InternetUp
-		dst.InternetDown += c.InternetDown
-		dst.LANUp += c.LANUp
-		dst.LANDown += c.LANDown
-	}
-}
-
 // CloseBefore removes and returns buckets that ended at or before t.
 func (a *Accumulator) CloseBefore(t time.Time) []*Bucket {
 	var out []*Bucket

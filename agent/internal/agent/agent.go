@@ -2,12 +2,16 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -21,11 +25,11 @@ import (
 )
 
 const (
-	neighborInterval   = 5 * time.Second
-	topologyInterval   = 30 * time.Second
-	checkpointInterval = time.Minute
-	partialInterval    = 30 * time.Second
-	statsInterval      = 5 * time.Minute
+	neighborInterval = 5 * time.Second
+	topologyInterval = 30 * time.Second
+	closeInterval    = time.Minute
+	partialInterval  = 30 * time.Second
+	statsInterval    = time.Hour
 	// closeGrace allows hardware offload to sync counters past a boundary.
 	closeGrace = 2 * time.Second
 	// forceClose finalises buckets even when dumps keep failing.
@@ -39,7 +43,7 @@ type stats struct {
 
 type Agent struct {
 	cfg      config.Config
-	store    *store.Store
+	ledger   *store.Memory
 	hub      *server.Hub
 	view     *netinfo.View
 	tracker  *account.Tracker
@@ -74,16 +78,35 @@ func waitTopology(ctx context.Context, patterns []string) (netinfo.Topology, err
 	}
 }
 
-// Run blocks until ctx ends.
+// agentID reads the ID created by manage.sh install. The agent never writes
+// it, so a missing file gives an ID that lasts for this run only.
+func agentID(dataDir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(dataDir, "state", "agent-id"))
+	if id := string(bytes.TrimSpace(data)); err == nil && id != "" {
+		return id, nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("read agent id: %w", err)
+	}
+	id, err := randomID()
+	if err != nil {
+		return "", err
+	}
+	log.Printf("state/agent-id is missing; using a temporary agent ID for this run (run manage.sh install to create one)")
+	return id, nil
+}
+
+// Run blocks until ctx ends. Traffic data stays in memory; the agent only
+// reads configuration from disk.
 func Run(ctx context.Context, cfg config.Config, version string) error {
 	if err := ctsource.CheckAccounting(); err != nil {
 		return err
 	}
-	st, err := store.Open(cfg.DataDir, cfg.Retention)
+	id, err := agentID(cfg.DataDir)
 	if err != nil {
-		return fmt.Errorf("open ledger: %w", err)
+		return err
 	}
-	id, err := st.AgentID(randomID)
+	runID, err := randomID()
 	if err != nil {
 		return err
 	}
@@ -95,11 +118,11 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 	if err != nil {
 		log.Printf("read neighbours: %v", err)
 	}
-	log.Printf("client interfaces %v, WAN interfaces %v, %d client networks", topo.ClientLinks, topo.WANLinks, len(topo.ClientPrefixes))
-	a := &Agent{cfg: cfg, store: st, hub: server.NewHub(), view: netinfo.NewView(topo, neigh),
+	log.Printf("client interfaces %v, WAN interfaces %v, %d client networks; buffering %s of buckets in memory",
+		topo.ClientLinks, topo.WANLinks, len(topo.ClientPrefixes), cfg.BufferWindow)
+	a := &Agent{cfg: cfg, ledger: store.NewMemory(cfg.BufferWindow), hub: server.NewHub(), view: netinfo.NewView(topo, neigh),
 		tracker: account.NewTracker(), acc: account.NewAccumulator(), live: map[string]*account.Counters{},
 		events: make(chan error, 16)}
-	a.restore(time.Now())
 	dumper, err := ctsource.OpenDumper()
 	if err != nil {
 		return err
@@ -112,40 +135,29 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 		default:
 		}
 	})
-	srv := server.New(ctx, cfg.Token, st, a.hub, server.Info{AgentID: id, Version: version})
-	go srv.Serve(ctx, cfg.Listen, cfg.CertFile(), cfg.KeyFile())
+	// The server outlives ctx briefly so the last partial buckets reach
+	// connected collectors before the streams close.
+	srvCtx, srvCancel := context.WithCancel(context.Background())
+	defer srvCancel()
+	srv := server.New(srvCtx, cfg.Token, a.ledger, a.hub, server.Info{AgentID: id, RunID: runID, Version: version})
+	go srv.Serve(srvCtx, cfg.Listen, cfg.CertFile(), cfg.KeyFile())
 	a.loop(ctx, dumper, destroyed)
+	a.shutdown(dumper, destroyed)
+	srvCancel()
 	srv.Wait(3 * time.Second)
 	return nil
 }
 
-func (a *Agent) restore(now time.Time) {
-	last, err := a.store.LastFinal()
-	if err != nil {
-		log.Printf("read last bucket: %v", err)
+// shutdown counts traffic since the last dump and sends the open buckets as
+// partial values. Collectors keep them; the next run starts from zero.
+func (a *Agent) shutdown(dumper *ctsource.Dumper, destroyed <-chan account.Flow) {
+	a.drain(destroyed)
+	if flows, err := dumper.Dump(nil); err == nil {
+		a.dump(flows, time.Now())
+	} else {
+		log.Printf("final conntrack dump failed: %v", err)
 	}
-	if last != nil {
-		a.acc.SetClosedThrough(last.Add(account.BucketSize))
-	}
-	open, err := a.store.LoadOpen()
-	if err != nil {
-		log.Printf("read checkpoint: %v", err)
-	}
-	sort.Slice(open, func(i, j int) bool { return open[i].Start.Before(open[j].Start) })
-	for _, rec := range open {
-		if last != nil && !rec.Start.After(*last) {
-			continue
-		}
-		if !rec.Start.Add(account.BucketSize).After(now) {
-			rec.Final = true
-			if err := a.store.AppendFinal(rec); err != nil {
-				log.Printf("store restored bucket: %v", err)
-			}
-			a.acc.SetClosedThrough(rec.Start.Add(account.BucketSize))
-			continue
-		}
-		a.acc.Restore(rec.ToAccount())
-	}
+	a.broadcastPartial(time.Now())
 }
 
 func (a *Agent) interval() time.Duration {
@@ -160,8 +172,8 @@ func (a *Agent) loop(ctx context.Context, dumper *ctsource.Dumper, destroyed <-c
 	defer dumpTimer.Stop()
 	tickers := map[string]*time.Ticker{
 		"neighbor": time.NewTicker(neighborInterval), "topology": time.NewTicker(topologyInterval),
-		"checkpoint": time.NewTicker(checkpointInterval), "partial": time.NewTicker(partialInterval),
-		"prune": time.NewTicker(time.Hour), "stats": time.NewTicker(statsInterval),
+		"close": time.NewTicker(closeInterval), "partial": time.NewTicker(partialInterval),
+		"stats": time.NewTicker(statsInterval),
 	}
 	for _, t := range tickers {
 		defer t.Stop()
@@ -171,7 +183,6 @@ func (a *Agent) loop(ctx context.Context, dumper *ctsource.Dumper, destroyed <-c
 	for {
 		select {
 		case <-ctx.Done():
-			a.checkpoint()
 			return
 		case f := <-destroyed:
 			a.destroy(f, time.Now())
@@ -217,27 +228,20 @@ func (a *Agent) loop(ctx context.Context, dumper *ctsource.Dumper, destroyed <-c
 				continue
 			}
 			a.view.SetTopology(topo)
-		case <-tickers["checkpoint"].C:
+		case <-tickers["close"].C:
 			a.closeBuckets(time.Now().Add(-forceClose))
-			a.checkpoint()
 		case <-tickers["partial"].C:
 			if a.hub.Count() > 0 {
 				a.broadcastPartial(time.Now())
-			}
-		case <-tickers["prune"].C:
-			if n, err := a.store.Prune(time.Now()); err != nil {
-				log.Printf("prune ledger: %v", err)
-			} else if n > 0 {
-				log.Printf("removed %d expired ledger files", n)
 			}
 		case <-tickers["stats"].C:
 			avg := time.Duration(0)
 			if a.stats.dumps > 0 {
 				avg = a.stats.dumpTime / time.Duration(a.stats.dumps)
 			}
-			log.Printf("stats: flows=%d dumps=%d dump_errors=%d avg_dump=%s max_dump=%s destroys=%d event_restarts=%d missed=%d final_buckets=%d consumers=%d",
+			log.Printf("stats: flows=%d dumps=%d dump_errors=%d avg_dump=%s max_dump=%s destroys=%d event_restarts=%d missed=%d final_buckets=%d buffered=%d consumers=%d",
 				a.tracker.Tracked(), a.stats.dumps, a.stats.dumpErrors, avg.Round(time.Microsecond), a.stats.maxDump.Round(time.Microsecond),
-				a.stats.destroys, a.stats.eventErrors, a.tracker.Missed, a.stats.finals, a.hub.Count())
+				a.stats.destroys, a.stats.eventErrors, a.tracker.Missed, a.stats.finals, a.ledger.Len(), a.hub.Count())
 			a.stats.dumps, a.stats.dumpTime, a.stats.maxDump = 0, 0, 0
 		}
 	}
@@ -314,9 +318,7 @@ func (a *Agent) closeBuckets(before time.Time) {
 func (a *Agent) finalize(buckets []*account.Bucket) {
 	for _, b := range buckets {
 		rec := protocol.FromAccount(b, true)
-		if err := a.store.AppendFinal(rec); err != nil {
-			log.Printf("store bucket %s: %v", rec.Start.Format(time.RFC3339), err)
-		}
+		a.ledger.AppendFinal(rec)
 		a.stats.finals++
 		a.broadcast(protocol.BucketUpdate{Type: "bucket", Bucket: rec})
 	}
@@ -363,15 +365,4 @@ func (a *Agent) emitLive(now time.Time) {
 	a.broadcast(msg)
 	a.live = map[string]*account.Counters{}
 	a.lastLive = now
-}
-
-func (a *Agent) checkpoint() {
-	open := a.acc.Snapshot()
-	recs := make([]protocol.Bucket, 0, len(open))
-	for _, b := range open {
-		recs = append(recs, protocol.FromAccount(b, false))
-	}
-	if err := a.store.SaveOpen(recs); err != nil {
-		log.Printf("save checkpoint: %v", err)
-	}
 }

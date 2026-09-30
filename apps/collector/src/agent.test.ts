@@ -36,6 +36,12 @@ describe('agent messages', () => {
     expect(() => parseAgentMessage(JSON.stringify({type: 'bucket', bucket: {...bucket, subjects: [
       {...bucket.subjects[0], internet: {up: '-1', down: '0'}}]}}))).toThrow(/byte count/);
     expect(() => parseAgentMessage(JSON.stringify({type: 'hello', protocol: 2, agentId: 'a', version: 'v', now: bucket.start}))).toThrow(/protocol/);
+    const hello = (extra: object) => parseAgentMessage(JSON.stringify({type: 'hello', protocol: 1, agentId: 'a', version: 'v',
+      now: bucket.start, earliestBucket: null, ...extra}));
+    const run = (extra: object) => { const msg = hello(extra); return msg.type === 'hello' ? msg.hello.runId : null; };
+    expect(run({runId: 'r1'})).toBe('r1');
+    expect(run({})).toBe(''); // agents before 0.2.0
+    expect(() => hello({runId: 'x'.repeat(65)})).toThrow(/run ID/);
   });
 
   it('converts live frames to rates and stays under the NOTIFY limit', () => {

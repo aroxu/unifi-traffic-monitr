@@ -56,4 +56,34 @@ describe.skipIf(process.env.DB_INTEGRATION !== '1')('gateway agent ingest', () =
       db.release();
     }
   });
+
+  it('adds a bucket counted by two agent runs across a restart', async () => {
+    const db = await getPool().connect();
+    try {
+      const site = (await db.query<{id: string}>(`INSERT INTO sites (unifi_id,internal_name,label)
+        VALUES ($1,'default','test') RETURNING id`, [`agent-${randomUUID()}`])).rows[0].id;
+      const client = (await db.query<{id: string}>(`INSERT INTO clients (site_id,mac,online) VALUES ($1,$2,true)
+        RETURNING id`, [site, mac])).rows[0].id;
+      const rollup = async (resolution: string) => (await db.query<{bytes: string; observed_seconds: number; gap_count: number}>(
+        `SELECT bytes::text, observed_seconds, gap_count FROM traffic_rollups WHERE client_id=$1 AND scope='internet'
+          AND direction='download' AND resolution=$2 AND bucket_start='2026-09-30T05:00:00Z'`, [client, resolution])).rows[0];
+
+      // Run A stops after 120 s and sends its partial; run B counts the rest from zero.
+      await ingestAgentBuckets(db, site, [bucket('2026-09-30T05:00:00Z', false, 120, 1000n)], 'run-a');
+      await ingestAgentBuckets(db, site, [bucket('2026-09-30T05:00:00Z', false, 60, 200n)], 'run-b');
+      expect(await rollup('5m')).toEqual({bytes: '1200', observed_seconds: 180, gap_count: 0});
+      await ingestAgentBuckets(db, site, [bucket('2026-09-30T05:00:00Z', true, 170, 500n)], 'run-b');
+      // The few seconds between the runs are missing, so the bucket counts as a gap.
+      expect(await rollup('5m')).toEqual({bytes: '1500', observed_seconds: 290, gap_count: 1});
+      expect(await rollup('1h')).toEqual({bytes: '1500', observed_seconds: 290, gap_count: 1});
+      // Replaying run B after a collector reconnect changes nothing.
+      await ingestAgentBuckets(db, site, [bucket('2026-09-30T05:00:00Z', true, 170, 500n)], 'run-b');
+      expect((await rollup('5m')).bytes).toBe('1500');
+      const rows = await db.query<{count: string}>(`SELECT count(*)::text AS count FROM agent_buckets
+        WHERE site_id=$1 AND subject=$2 AND scope='internet' AND direction='download'`, [site, mac]);
+      expect(rows.rows[0].count).toBe('2');
+    } finally {
+      db.release();
+    }
+  });
 });

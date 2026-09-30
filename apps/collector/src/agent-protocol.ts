@@ -5,7 +5,7 @@ export type AgentSubject = {mac: string; internet: AgentPair; lan: AgentPair};
 export type AgentBucket = {start: Date; final: boolean; coverageSeconds: number; subjects: AgentSubject[]};
 export type LivePair = {up: number; down: number};
 export type LiveSubject = {mac: string; internet: LivePair; lan: LivePair};
-export type AgentHello = {agentId: string; version: string; now: Date; earliestBucket: Date | null};
+export type AgentHello = {agentId: string; runId: string; version: string; now: Date; earliestBucket: Date | null};
 export type AgentMessage =
   | {type: 'hello'; hello: AgentHello}
   | {type: 'buckets'; items: AgentBucket[]}
@@ -83,7 +83,9 @@ export function parseAgentMessage(raw: string): AgentMessage {
     case 'hello': {
       if (v.protocol !== 1) fail('unsupported protocol version');
       if (typeof v.agentId !== 'string' || typeof v.version !== 'string') fail('hello');
-      return {type: 'hello', hello: {agentId: v.agentId.slice(0, 64), version: v.version.slice(0, 64),
+      // Agents before 0.2.0 send no run ID; they restored their counts from disk.
+      if (v.runId !== undefined && (typeof v.runId !== 'string' || v.runId.length > 64)) fail('run ID');
+      return {type: 'hello', hello: {agentId: v.agentId.slice(0, 64), runId: (v.runId as string | undefined) ?? '', version: v.version.slice(0, 64),
         now: time(v.now, 'hello time'), earliestBucket: optionalTime(v.earliestBucket, 'earliest bucket')}};
     }
     case 'buckets':

@@ -3,15 +3,21 @@ import {UNATTRIBUTED, type AgentBucket} from './agent-protocol';
 
 const scopes = ['internet', 'lan'] as const;
 
-/** Rebuild agent-owned rollups for the given buckets. Both resolutions are replaced, never added. */
+/**
+ * Rebuild agent-owned rollups for the given buckets. Both resolutions are
+ * replaced, never added. Rows from different agent runs of the same bucket are
+ * summed, because a restarted agent counts that bucket again from zero.
+ */
 async function applyRollups(client: PoolClient, siteId: string, starts: Date[]): Promise<void> {
   if (!starts.length) return;
   const unique = [...new Set(starts.map(d => d.getTime()))].map(ms => new Date(ms));
   await client.query(`INSERT INTO traffic_rollups
       (site_id,client_id,scope,direction,resolution,bucket_start,bytes,observed_seconds,gap_count,reset_count,estimated)
-    SELECT site_id, client_id, scope, direction, '5m', bucket_start, bytes, coverage_seconds,
-      CASE WHEN final AND coverage_seconds < 300 THEN 1 ELSE 0 END, 0, false
+    SELECT site_id, client_id, scope, direction, '5m', bucket_start, sum(bytes)::bigint,
+      LEAST(300, sum(coverage_seconds))::int,
+      CASE WHEN bool_or(final) AND sum(coverage_seconds) < 300 THEN 1 ELSE 0 END, 0, false
     FROM agent_buckets WHERE site_id=$1 AND client_id IS NOT NULL AND bucket_start = ANY($2::timestamptz[])
+    GROUP BY site_id, client_id, scope, direction, bucket_start
     ON CONFLICT (client_id,scope,direction,resolution,bucket_start) DO UPDATE SET
       bytes=EXCLUDED.bytes, observed_seconds=EXCLUDED.observed_seconds, gap_count=EXCLUDED.gap_count,
       reset_count=0, estimated=false`, [siteId, unique]);
@@ -33,11 +39,11 @@ async function applyRollups(client: PoolClient, siteId: string, starts: Date[]):
 }
 
 /**
- * Store agent buckets and derive rollups in one transaction. A later message
- * for the same bucket replaces the earlier values; a partial update never
- * overwrites a final one.
+ * Store agent buckets and derive rollups in one transaction. Within one agent
+ * run a later message for the same bucket replaces the earlier values, and a
+ * partial update never overwrites a final one.
  */
-export async function ingestAgentBuckets(client: PoolClient, siteId: string, buckets: AgentBucket[]): Promise<{rows: number; lastFinal: Date | null}> {
+export async function ingestAgentBuckets(client: PoolClient, siteId: string, buckets: AgentBucket[], runId = ''): Promise<{rows: number; lastFinal: Date | null}> {
   const subject: string[] = [], start: Date[] = [], scope: string[] = [], direction: string[] = [];
   const bytes: string[] = [], coverage: number[] = [], final: boolean[] = [];
   let lastFinal: Date | null = null;
@@ -56,16 +62,16 @@ export async function ingestAgentBuckets(client: PoolClient, siteId: string, buc
   try {
     if (subject.length) {
       await client.query(`INSERT INTO agent_buckets
-          (site_id,subject,bucket_start,scope,direction,bytes,coverage_seconds,final,client_id,received_at)
+          (site_id,subject,bucket_start,scope,direction,bytes,coverage_seconds,final,client_id,received_at,run_id)
         SELECT $1, v.subject, v.bucket_start, v.scope, v.direction, v.bytes, v.coverage, v.final,
-          (SELECT c.id FROM clients c WHERE c.site_id=$1 AND c.mac=v.subject), now()
+          (SELECT c.id FROM clients c WHERE c.site_id=$1 AND c.mac=v.subject), now(), $9
         FROM unnest($2::text[],$3::timestamptz[],$4::text[],$5::text[],$6::bigint[],$7::int[],$8::bool[])
           AS v(subject,bucket_start,scope,direction,bytes,coverage,final)
-        ON CONFLICT (site_id,subject,bucket_start,scope,direction) DO UPDATE SET
+        ON CONFLICT (site_id,subject,bucket_start,scope,direction,run_id) DO UPDATE SET
           bytes=EXCLUDED.bytes, coverage_seconds=EXCLUDED.coverage_seconds, final=EXCLUDED.final,
           client_id=COALESCE(agent_buckets.client_id, EXCLUDED.client_id), received_at=now()
         WHERE EXCLUDED.final OR NOT agent_buckets.final`,
-        [siteId, subject, start, scope, direction, bytes, coverage, final]);
+        [siteId, subject, start, scope, direction, bytes, coverage, final, runId]);
       await applyRollups(client, siteId, buckets.map(b => b.start));
     }
     if (lastFinal) await client.query(`INSERT INTO agent_status (site_id,last_final_bucket,updated_at) VALUES ($1,$2,now())

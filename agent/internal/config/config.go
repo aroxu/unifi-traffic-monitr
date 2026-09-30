@@ -19,7 +19,7 @@ type Config struct {
 	DataDir          string
 	Listen           []string
 	Token            string
-	Retention        time.Duration
+	BufferWindow     time.Duration
 	LiveInterval     time.Duration
 	IdleInterval     time.Duration
 	ClientInterfaces []string
@@ -78,11 +78,13 @@ func FromEnv(dataDir string) (Config, error) {
 	if len(cfg.Token) < 32 {
 		return cfg, errors.New("AGENT_TOKEN must be at least 32 characters")
 	}
-	days, err := intEnv("AGENT_RETENTION_DAYS", 7, 1, 30)
+	// Final buckets wait in memory for collectors that were offline. The old
+	// AGENT_RETENTION_DAYS setting is ignored because nothing is kept on disk.
+	hours, err := intEnv("AGENT_BUFFER_HOURS", 24, 1, 168)
 	if err != nil {
 		return cfg, err
 	}
-	cfg.Retention = time.Duration(days) * 24 * time.Hour
+	cfg.BufferWindow = time.Duration(hours) * time.Hour
 	live, err := intEnv("AGENT_LIVE_INTERVAL_MS", 1000, 500, 10000)
 	if err != nil {
 		return cfg, err

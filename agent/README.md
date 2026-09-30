@@ -1,6 +1,8 @@
 # 게이트웨이 에이전트
 
-UniFi 게이트웨이(UCG)에 설치해 클라이언트별 트래픽을 장비에서 직접 세는 Go 프로그램입니다. 수집기는 WebSocket으로 에이전트에 연결합니다. 연결되어 있는 동안에는 1초마다 실시간 데이터를 받습니다. 연결이 없을 때 에이전트는 전송하지 않고 5분 단위 기록만 `/data`에 쌓습니다. 수집기가 다시 연결하면 빠진 기록을 채웁니다.
+UniFi 게이트웨이(UCG)에 설치해 클라이언트별 트래픽을 장비에서 직접 세는 Go 프로그램입니다. 수집기는 WebSocket으로 에이전트에 연결합니다. 연결되어 있는 동안에는 1초마다 실시간 데이터를 받습니다. 연결이 없을 때 에이전트는 전송하지 않고 5분 단위 기록을 메모리에 담아 둡니다(기본 24시간). 수집기가 다시 연결하면 빠진 기록을 채웁니다.
+
+게이트웨이의 저장소는 쓰기가 느리고 수명이 있는 eMMC입니다. 그래서 에이전트는 트래픽 기록을 디스크에 쓰지 않습니다. 디스크에는 설치할 때 만드는 설정, 인증서, 에이전트 ID만 있고, 실행 중인 에이전트에게 `/data`는 읽기 전용입니다.
 
 ## 측정 방식
 
@@ -13,6 +15,13 @@ UniFi 게이트웨이(UCG)에 설치해 클라이언트별 트래픽을 장비�
 - **업로드와 다운로드:** 클라이언트가 보낸 바이트가 업로드, 받은 바이트가 다운로드입니다. 단위는 IP 패킷 크기이므로 전송한 파일 크기보다 TCP/IP 헤더만큼 큽니다.
 
 바이트는 5분 UTC 버킷에 시간 비율로 나누어 기록합니다. 각 버킷에는 에이전트가 실제로 측정한 시간(`coverageSeconds`)이 함께 저장됩니다. 에이전트가 재시작하면 첫 조회는 기준값으로만 쓰므로, 그 버킷의 측정 시간은 300초보다 짧아집니다.
+
+### 재시작과 메모리 버퍼
+
+- **정상 종료:** 멈추기 직전에 한 번 더 조회하고, 열린 버킷을 연결된 수집기에 미확정 값으로 보낸 뒤 연결을 닫습니다.
+- **새 실행:** 에이전트는 시작할 때마다 새 실행 ID(`runId`)를 만들고 열린 버킷을 0부터 셉니다. 수집기는 실행별 값을 따로 저장하고 더하므로, 재시작이 있던 5분 버킷도 두 실행의 합이 됩니다. 재시작 사이의 몇 초는 측정 시간에서 빠집니다.
+- **사라지는 기록:** 수집기가 연결되지 않은 상태에서 에이전트가 재시작하거나 게이트웨이가 재부팅하면, 아직 보내지 못한 메모리 기록은 사라집니다. 수집기가 연결되어 있으면 30초마다 열린 버킷을 받으므로 잃는 양은 거의 없습니다.
+- **메모리 사용량:** 5분 버킷 하나는 클라이언트당 수십 바이트입니다. 클라이언트 50대, 24시간(288개 버킷)이면 약 1 MB입니다.
 
 ## 설치
 
@@ -53,13 +62,13 @@ UNIFI_AGENT_CERT_SHA256=<manage.sh info의 Certificate 값>
 journalctl -u unifi-traffic-agent -f
 ```
 
-`agent.env`의 설정은 다음과 같습니다. 값을 바꾼 뒤 `manage.sh restart`를 실행합니다.
+`agent.env`의 설정은 다음과 같습니다. 값을 바꾼 뒤 `manage.sh restart`를 실행합니다. 0.1.x에서 쓰던 `AGENT_RETENTION_DAYS`는 무시되므로 지워도 됩니다.
 
 | 변수 | 기본값 | 설명 |
 | --- | --- | --- |
 | `AGENT_LISTEN` | `<br0 IPv4>:8790` | 쉼표로 구분한 IP:포트. LAN 주소만 지정합니다 |
 | `AGENT_TOKEN` | 설치 시 생성 | 32자 이상 |
-| `AGENT_RETENTION_DAYS` | 7 | 장비에 보관하는 5분 기록 일수(1~30) |
+| `AGENT_BUFFER_HOURS` | 24 | 수집기가 없을 때 메모리에 담아 두는 5분 기록 시간(1~168). 디스크에는 쓰지 않습니다 |
 | `AGENT_LIVE_INTERVAL_MS` | 1000 | 수집기 연결 중 조회 주기 |
 | `AGENT_IDLE_INTERVAL_MS` | 10000 | 연결이 없을 때 조회 주기 |
 | `AGENT_CLIENT_INTERFACES` | `br*` | 클라이언트 네트워크 인터페이스 이름 패턴 |
@@ -68,22 +77,22 @@ journalctl -u unifi-traffic-agent -f
 
 [tailscale-unifi](https://github.com/SierraSoftworks/tailscale-unifi)와 같은 방식으로 영구 저장소를 사용합니다.
 
-- **`/data/unifi-traffic-agent`:** 실행 파일, 설정, 인증서, 5분 기록(`buckets/YYYY-MM-DD.jsonl`), 열린 버킷 체크포인트(`state/`)를 둡니다. 체크포인트는 60초마다 저장됩니다.
+- **`/data/unifi-traffic-agent`:** 실행 파일, 설정(`agent.env`), 인증서(`tls/`), 에이전트 ID(`state/agent-id`)를 둡니다. 모두 설치나 업데이트 때만 쓰는 파일입니다. 0.1.x가 남긴 `buckets/`와 `state/open-buckets.json`은 `update`, `install`, 부팅 훅이 지웁니다.
 - **systemd 서비스:** `unifi-traffic-agent.service`는 심볼릭 링크가 아닌 일반 파일로 `/etc/systemd/system`에 복사합니다. `RequiresMountsFor=/data/unifi-traffic-agent`, `Restart=always`를 사용합니다.
 - **부팅 훅:** `/data/on_boot.d/20-unifi-traffic-agent.sh`가 부팅 때 서비스 파일을 복구하고 에이전트를 시작합니다. 이 훅은 `udm-boot.service`가 실행합니다.
-- **자원 제한:** 서비스는 `CPUQuota=50%`, `MemoryMax=128M`, `GOMEMLIMIT=64MiB`로 제한됩니다. 권한은 `CAP_NET_ADMIN`만 남기고, `/data/unifi-traffic-agent` 외에는 읽기 전용입니다.
+- **자원 제한:** 서비스는 `CPUQuota=50%`, `MemoryMax=128M`, `GOMEMLIMIT=64MiB`로 제한됩니다. 권한은 `CAP_NET_ADMIN`만 남깁니다. `ProtectSystem=strict`에 쓰기 허용 경로를 두지 않아 `/data`를 포함한 파일 시스템 전체가 읽기 전용입니다. 로그는 journald로 가며, 평소에는 연결·해제와 1시간마다 한 줄의 통계만 남깁니다.
 
 ## WebSocket 프로토콜 v1
 
 `GET /healthz`는 인증 없이 `ok`를 반환합니다. `GET /v1/stream`은 `Authorization: Bearer <token>`이 필요합니다. 토큰이 틀리면 401을 반환하고, 같은 IP에서 1분 동안 5회 실패하면 429를 반환합니다. 동시 연결은 4개까지입니다.
 
-1. 에이전트가 `hello {protocol, agentId, version, now, earliestBucket}`를 보냅니다.
+1. 에이전트가 `hello {protocol, agentId, runId, version, now, earliestBucket}`를 보냅니다. `runId`는 에이전트가 시작할 때마다 바뀝니다. `earliestBucket`은 메모리에 남아 있는 가장 오래된 확정 버킷입니다.
 2. 수집기가 10초 안에 `resume {since}`를 보냅니다. `since`는 DB에 저장된 마지막 확정 버킷 시작 시각이며, 처음이면 `null`입니다.
 3. 에이전트가 그 뒤의 확정 버킷을 `buckets {items}`로 100개씩 보내고, 마지막에 `replay_done {through}`를 보냅니다.
 4. 이후 에이전트는 매 조회마다 `live {at, intervalMs, subjects}`를 보냅니다. 값은 직전 메시지 이후의 바이트입니다.
 5. 열린 버킷은 30초마다 `bucket {final: false}`로, 닫힐 때는 `bucket {final: true}`로 보냅니다.
 
-버킷의 바이트는 64비트 정밀도를 위해 십진 문자열로 보냅니다. 수집기는 같은 버킷을 다시 받으면 이전 값을 새 값으로 바꿉니다. 이미 확정된 값을 미확정 값으로 덮어쓰지는 않습니다.
+버킷의 바이트는 64비트 정밀도를 위해 십진 문자열로 보냅니다. 수집기는 같은 실행의 같은 버킷을 다시 받으면 이전 값을 새 값으로 바꿉니다. 이미 확정된 값을 미확정 값으로 덮어쓰지는 않습니다. 실행이 다르면 값을 따로 두고 더합니다. 에이전트가 멈출 때는 대기 중인 메시지를 모두 보낸 뒤 1001로 연결을 닫습니다.
 
 ## 빌드와 배포
 
