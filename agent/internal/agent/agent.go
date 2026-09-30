@@ -115,6 +115,7 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 	srv := server.New(ctx, cfg.Token, st, a.hub, server.Info{AgentID: id, Version: version})
 	go srv.Serve(ctx, cfg.Listen, cfg.CertFile(), cfg.KeyFile())
 	a.loop(ctx, dumper, destroyed)
+	srv.Wait(3 * time.Second)
 	return nil
 }
 

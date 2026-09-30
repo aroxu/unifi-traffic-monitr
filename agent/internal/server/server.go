@@ -139,6 +139,7 @@ type Server struct {
 	base     context.Context
 	mu       sync.Mutex
 	failures map[string][]time.Time
+	streams  sync.WaitGroup
 }
 
 func New(base context.Context, token string, st *store.Store, hub *Hub, info Info) *Server {
@@ -210,6 +211,20 @@ func writeRaw(ctx context.Context, c *websocket.Conn, b []byte) error {
 	return c.Write(wctx, websocket.MessageText, b)
 }
 
+// Wait blocks until open streams have closed or the timeout passes. Call it
+// after the base context is cancelled so consumers receive a close frame.
+func (s *Server) Wait(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		s.streams.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+	}
+}
+
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	ip := remoteIP(r)
 	now := time.Now()
@@ -230,6 +245,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	s.streams.Add(1)
+	defer s.streams.Done()
 	defer conn.CloseNow()
 	conn.SetReadLimit(64 << 10)
 	ctx, cancel := context.WithCancel(s.base)
