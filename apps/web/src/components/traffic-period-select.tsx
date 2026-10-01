@@ -12,5 +12,5 @@ export const trafficPeriodOptions: SelectOption[] = [
 export function TrafficPeriodSelect({clientId, period, scope}: {clientId: string; period: string; scope: string}) {
   const router = useRouter();
   return <div className="max-w-xs"><UiSelect label="트래픽 기간" value={period} options={trafficPeriodOptions}
-    onValueChange={value => router.push(`/clients/${clientId}?period=${value}&scope=${scope}`)} /></div>;
+    onValueChange={value => router.push(`/clients/${clientId}?period=${value}&scope=${scope}`, {scroll: false})} /></div>;
 }

@@ -48,7 +48,8 @@ export default async function ClientPage({params, searchParams}: {
     </div>
     {agent && <ClientLiveTraffic clientId={id} connected={agent.connected} today={today} />}
     {traffic && <section className="panel space-y-4"><div className="section-header"><div><p className="eyebrow">TRAFFIC HISTORY</p><h2 className="panel-title mt-1">{scopeLabels[scope]} 트래픽</h2><p className="panel-subtitle">{scopeNotes[scope]}</p></div></div>
-      {scopes.length > 1 && <nav aria-label="트래픽 범위" className="flex flex-wrap gap-2">{scopes.map(item => <Link key={item} href={`/clients/${id}?period=${period}&scope=${item}`} className="scope-link" aria-current={item === scope ? 'page' : undefined}>{scopeLabels[item]}</Link>)}</nav>}
+      {/* Changing the scope or period redraws this page in place, so keep the scroll position. */}
+      {scopes.length > 1 && <nav aria-label="트래픽 범위" className="flex flex-wrap gap-2">{scopes.map(item => <Link key={item} href={`/clients/${id}?period=${period}&scope=${item}`} scroll={false} className="scope-link" aria-current={item === scope ? 'page' : undefined}>{scopeLabels[item]}</Link>)}</nav>}
       <TrafficPeriodSelect clientId={id} period={period} scope={scope} />
       <TrafficChart data={traffic} gatewayMeasured={scope === 'internet' || scope === 'lan'} />
     </section>}
