@@ -163,4 +163,64 @@ describe.skipIf(process.env.DB_INTEGRATION !== '1')('PostgreSQL traffic rollups'
       expect(recent?.topClients[0]).toMatchObject({id: client, totalBytes: '5000000'});
     } finally { db.release(); }
   });
+
+  it('ranks at most five overview clients by bytes, breaking ties by client ID', async () => {
+    const db = await getPool().connect();
+    try {
+      const site = (await db.query<{id: string}>(`INSERT INTO sites (unifi_id,internal_name,label)
+        VALUES ($1,'default','test') RETURNING id`, [`leaders-${randomUUID()}`])).rows[0].id;
+      const bucket = new Date(Math.floor(Date.now() / 300000) * 300000 - 600000);
+      const ids: string[] = [];
+      for (const [i, bytes] of [10, 60, 30, 60, 50, 20].entries()) {
+        const id = (await db.query<{id: string}>(`INSERT INTO clients (site_id,mac,name) VALUES ($1,$2,$3) RETURNING id`,
+          [site, `00:00:00:00:01:0${i}`, `client ${i}`])).rows[0].id;
+        ids.push(id);
+        await db.query(`INSERT INTO traffic_rollups
+          (site_id,client_id,scope,direction,resolution,bucket_start,bytes,observed_seconds,gap_count,reset_count)
+          VALUES ($1,$2,'internet','upload','5m',$3,$4,300,0,0)`, [site, id, bucket, bytes]);
+      }
+      const overview = await getOverviewTraffic(new Date(Date.now() - 86400000), new Date(), site);
+      expect(overview?.uploadBytes).toBe('230');
+      expect(overview?.points).toHaveLength(1);
+      const tied = [ids[1], ids[3]].sort();
+      expect(overview?.topClients.map(row => row.id)).toEqual([...tied, ids[4], ids[2], ids[5]]);
+      expect(overview?.topClients[0]).toMatchObject({totalBytes: '60'});
+    } finally { db.release(); }
+  });
+
+  it('prunes old collection runs and gateway agent buckets on their own schedules', async () => {
+    const db = await getPool().connect();
+    try {
+      const site = (await db.query<{id: string}>(`INSERT INTO sites (unifi_id,internal_name,label)
+        VALUES ($1,'default','test') RETURNING id`, [`retention-${randomUUID()}`])).rows[0].id;
+      const client = (await db.query<{id: string}>(`INSERT INTO clients (site_id,mac)
+        VALUES ($1,'00:00:00:00:02:01') RETURNING id`, [site])).rows[0].id;
+      await db.query(`INSERT INTO settings (id,raw_retention_days,five_minute_retention_days,hourly_retention_days)
+        VALUES (1,3,90,365) ON CONFLICT (id) DO UPDATE SET raw_retention_days=3,
+          five_minute_retention_days=90,hourly_retention_days=365`);
+      const now = new Date('2026-12-01T00:00:00Z');
+      const daysAgo = (days: number) => new Date(now.getTime() - days * 86400000);
+      const run = async (at: Date) => (await db.query<{id: string}>(`INSERT INTO collector_runs (site_id,started_at,status)
+        VALUES ($1,$2,'raw_only') RETURNING id`, [site, at])).rows[0].id;
+      const expired = await run(daysAgo(40));
+      const referenced = await run(daysAgo(40));
+      const recent = await run(daysAgo(10));
+      // A sample waiting for its rollup is kept, and so is the run it belongs to.
+      await db.query(`INSERT INTO client_samples (site_id,client_id,run_id,source,scope,direction,counter_bytes,collected_at,quality)
+        VALUES ($1,$2,$3,'test','internet','download',1,$4,'valid')`, [site, client, referenced, daysAgo(40)]);
+      const bucket = (at: Date) => db.query(`INSERT INTO agent_buckets
+        (site_id,subject,client_id,bucket_start,scope,direction,bytes,coverage_seconds,final)
+        VALUES ($1,'00:00:00:00:02:01',$2,$3,'internet','download',5,300,true)`, [site, client, at]);
+      await bucket(daysAgo(9));
+      await bucket(daysAgo(7));
+
+      // Raw retention is 3 days, but the agent ledger keeps at least 8 and runs at least 30.
+      expect(await pruneExpiredHistory(db, site, now)).toMatchObject({runs: 1, agentBuckets: 1});
+      const runs = await db.query<{id: string}>('SELECT id FROM collector_runs WHERE site_id=$1 ORDER BY id', [site]);
+      expect(runs.rows.map(row => row.id)).toEqual([referenced, recent].sort());
+      expect(runs.rows.map(row => row.id)).not.toContain(expired);
+      const ledger = await db.query<{bucket_start: Date}>('SELECT bucket_start FROM agent_buckets WHERE site_id=$1', [site]);
+      expect(ledger.rows.map(row => row.bucket_start.toISOString())).toEqual([daysAgo(7).toISOString()]);
+    } finally { db.release(); }
+  });
 });

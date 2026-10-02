@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, asc, desc, eq, ilike, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, ne, or, sql } from 'drizzle-orm';
 import { clientSamples, clients, collectorRuns, devices, getDb, getOverviewTraffic, getPool, sites } from '@utm/db';
 import type {ClientListQuery} from '@utm/contracts';
 import type {Pool, PoolClient} from 'pg';
@@ -8,13 +8,15 @@ import type {Pool, PoolClient} from 'pg';
 export type AgentToday = {asOf: string | null; internet: {up: number; down: number}; lan: {up: number; down: number}};
 
 async function agentToday(executor: Pool | PoolClient, siteId: string, clientId?: string): Promise<AgentToday> {
+  // Separate statements let each use its own index: site and time, or client and time.
+  const filter = clientId ? 'b.client_id=$2' : 'b.site_id=$1';
   const result = await executor.query<{scope: string; direction: string; bytes: string; as_of: Date | null}>(`
-    WITH tz AS (SELECT COALESCE((SELECT timezone FROM settings WHERE id=1), 'Asia/Seoul') AS name)
     SELECT b.scope, b.direction, sum(b.bytes)::text AS bytes, max(b.received_at) AS as_of
-    FROM agent_buckets b, tz
-    WHERE b.site_id=$1 AND ($2::uuid IS NULL OR b.client_id=$2::uuid)
-      AND b.bucket_start >= (date_trunc('day', now() AT TIME ZONE tz.name) AT TIME ZONE tz.name)
-    GROUP BY b.scope, b.direction`, [siteId, clientId ?? null]);
+    FROM agent_buckets b
+    WHERE ${filter} AND b.site_id=$1
+      AND b.bucket_start >= (SELECT date_trunc('day', now() AT TIME ZONE s.tz) AT TIME ZONE s.tz
+        FROM (SELECT COALESCE((SELECT timezone FROM settings WHERE id=1), 'Asia/Seoul') AS tz) s)
+    GROUP BY b.scope, b.direction`, clientId ? [siteId, clientId] : [siteId]);
   const today: AgentToday = {asOf: null, internet: {up: 0, down: 0}, lan: {up: 0, down: 0}};
   for (const row of result.rows) {
     const scope = row.scope === 'internet' ? today.internet : row.scope === 'lan' ? today.lan : null;
@@ -39,11 +41,13 @@ export async function getOverview() {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     const db = getDb(client);
     const end = new Date();
-    const [siteRows, clientCount, onlineStatus, latestRun] = await Promise.all([
+    const [siteRows, clientCount, onlineStatus, latestRun, lastSuccess] = await Promise.all([
       db.select({id: sites.id, label: sites.label}).from(sites).orderBy(desc(sites.createdAt)).limit(10),
       db.select({count: sql<number>`count(*)::int`}).from(clients),
       db.select({known: sql<number>`count(${clients.online})::int`, online: sql<number>`count(*) filter (where ${clients.online} = true)::int`, offline: sql<number>`count(*) filter (where ${clients.online} = false)::int`}).from(clients),
-      db.select().from(collectorRuns).orderBy(desc(collectorRuns.startedAt)).limit(1)
+      db.select().from(collectorRuns).orderBy(desc(collectorRuns.startedAt)).limit(1),
+      db.select({startedAt: collectorRuns.startedAt}).from(collectorRuns).where(ne(collectorRuns.status, 'error'))
+        .orderBy(desc(collectorRuns.startedAt)).limit(1)
     ]);
     const [measured, traffic, agentRows, labelRows, todayUsage] = siteRows[0] ? await Promise.all([
       client.query<{present: boolean}>(`SELECT EXISTS (SELECT 1 FROM traffic_rollups
@@ -63,7 +67,8 @@ export async function getOverview() {
     const agentRow = agentRows?.rows[0];
     return {sites: siteRows, clientCount: clientCount[0]?.count ?? 0, onlineCount: onlineStatus[0]?.known ? onlineStatus[0].online : null,
       offlineCount: onlineStatus[0]?.known ? onlineStatus[0].offline : null,
-      latestRun: latestRun[0] ?? null, rawCounterCount: latestRun[0] && latestRun[0].status !== 'error' ? rawSamples[0]?.count ?? 0 : null,
+      latestRun: latestRun[0] ?? null, lastSuccessAt: lastSuccess[0]?.startedAt ?? null,
+      rawCounterCount: latestRun[0] && latestRun[0].status !== 'error' ? rawSamples[0]?.count ?? 0 : null,
       counterClientCount: latestRun[0] && latestRun[0].status !== 'error' ? rawSamples[0]?.clients ?? 0 : null,
       hasMeasuredUsage: measured?.rows[0]?.present ?? false, traffic,
       agent: agentRow ? {connected: agentRow.connected, version: agentRow.agent_version, lastFrameAt: agentRow.last_frame_at,
@@ -139,6 +144,7 @@ export async function getAgentStatus(): Promise<AgentStatus | null> {
 export async function getAgentUnattributed(): Promise<{upload: string; download: string}> {
   const result = await getPool().query<{upload: string | null; download: string | null}>(`SELECT
       sum(bytes) FILTER (WHERE direction='upload')::text AS upload, sum(bytes) FILTER (WHERE direction='download')::text AS download
-    FROM agent_buckets WHERE subject='unattributed' AND bucket_start >= now() - interval '24 hours'`);
+    FROM agent_buckets WHERE site_id=(SELECT id FROM sites ORDER BY created_at DESC LIMIT 1)
+      AND subject='unattributed' AND bucket_start >= now() - interval '24 hours'`);
   return {upload: result.rows[0]?.upload ?? '0', download: result.rows[0]?.download ?? '0'};
 }

@@ -4,6 +4,8 @@ import { Agent, fetch as undiciFetch } from 'undici';
 export {parseClientSnapshot, parseConnectedClientSnapshot, parseDeviceSnapshot} from './snapshot';
 export type {ClientSnapshot, ConnectedClientSnapshot, DeviceSnapshot, RawCounter} from './snapshot';
 export {parseDpiTraffic} from './dpi';
+export {UnifiResponseError} from './errors';
+import {UnifiResponseError} from './errors';
 export type {DpiClientUsage, DpiAppUsage} from './dpi';
 import {parseDpiTraffic, type DpiClientUsage} from './dpi';
 
@@ -69,16 +71,16 @@ export class UnifiClient {
       const rows = extractData(payload);
       const wrapper = payload as Record<string, unknown>;
       if (wrapper.offset !== offset || wrapper.count !== rows.length || typeof wrapper.totalCount !== 'number' || !Number.isSafeInteger(wrapper.totalCount) || wrapper.totalCount < 0) {
-        throw new Error('Invalid official site page');
+        throw new UnifiResponseError('Invalid official site page');
       }
       if (total === null) total = wrapper.totalCount as number;
       if (total !== wrapper.totalCount || sites.length + rows.length > total || (rows.length === 0 && sites.length < total)) {
-        throw new Error('Incomplete official site pagination');
+        throw new UnifiResponseError('Incomplete official site pagination');
       }
       sites.push(...rows);
       if (sites.length === total) return {data: sites};
     }
-    throw new Error('Official site page limit exceeded');
+    throw new UnifiResponseError('Official site page limit exceeded');
   }
   getOfficialSites(): Promise<{data: Record<string, unknown>[]}> {
     return this.getOfficialPages('/proxy/network/integration/v1/sites');
@@ -105,7 +107,7 @@ export class UnifiClient {
     const path = `/proxy/network/v2/api/site/${this.config.site}/traffic${suffix}?start=${from}&end=${to}`;
     const rows = parseDpiTraffic(await this.request(path));
     if (mac && (rows.length > 1 || rows.some(row => row.mac !== mac.toLowerCase()))) {
-      throw new Error('Unexpected DPI client response');
+      throw new UnifiResponseError('Unexpected DPI client response');
     }
     return rows;
   }
@@ -118,14 +120,14 @@ export function unifiConfigFromEnv(): UnifiConfig {
 }
 
 export function extractData(payload: unknown): Record<string, unknown>[] {
-  if (!payload || typeof payload !== 'object') throw new Error('Unexpected UniFi response');
+  if (!payload || typeof payload !== 'object') throw new UnifiResponseError('Unexpected UniFi response');
   const wrapper = payload as Record<string, unknown>;
   const rows = Array.isArray(wrapper.data) ? wrapper.data : null;
   if (!rows || !rows.every(row => row && typeof row === 'object' && !Array.isArray(row))) {
-    throw new Error('UniFi response did not contain a complete data array');
+    throw new UnifiResponseError('UniFi response did not contain a complete data array');
   }
   if (wrapper.meta && typeof wrapper.meta === 'object' && (wrapper.meta as Record<string, unknown>).rc !== 'ok') {
-    throw new Error('UniFi response reported failure');
+    throw new UnifiResponseError('UniFi response reported failure');
   }
   return rows as Record<string, unknown>[];
 }
@@ -136,12 +138,12 @@ export function extractInternalClients(payload: unknown): Record<string, unknown
   const wrapper = payload as Record<string, unknown>;
   const meta = wrapper.meta;
   if (!meta || typeof meta !== 'object' || Array.isArray(meta) || (meta as Record<string, unknown>).rc !== 'ok') {
-    throw new Error('Invalid internal client response status');
+    throw new UnifiResponseError('Invalid internal client response status');
   }
   const reported = meta as Record<string, unknown>;
   for (const count of [reported.count, reported.totalCount, wrapper.totalCount]) {
     if (count !== undefined && (!Number.isSafeInteger(count) || count !== rows.length)) {
-      throw new Error('Partial client page');
+      throw new UnifiResponseError('Partial client page');
     }
   }
   return rows;

@@ -31,7 +31,7 @@ export const clients = pgTable('clients', {
   wirelessNoiseDbm: integer('wireless_noise_dbm'),
   wirelessObservedAt: t('wireless_observed_at'),
   updatedAt: t('updated_at').notNull().defaultNow(),
-}, (table) => [uniqueIndex('clients_site_mac_key').on(table.siteId, table.mac), index('clients_updated_idx').on(table.updatedAt)]);
+}, (table) => [uniqueIndex('clients_site_mac_key').on(table.siteId, table.mac)]);
 
 export const collectorRuns = pgTable('collector_runs', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -39,7 +39,8 @@ export const collectorRuns = pgTable('collector_runs', {
   startedAt: t('started_at').notNull(), finishedAt: t('finished_at'),
   status: text('status').notNull(), errorCode: text('error_code'),
   clientCount: integer('client_count'),
-}, (table) => [index('collector_runs_site_time_idx').on(table.siteId, table.startedAt)]);
+}, (table) => [index('collector_runs_site_time_idx').on(table.siteId, table.startedAt),
+  index('collector_runs_started_idx').on(table.startedAt)]);
 
 export const collectorCheckpoints = pgTable('collector_checkpoints', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -58,7 +59,7 @@ export const clientSamples = pgTable('client_samples', {
   sessionKey: text('session_key'), counterBytes: bytes('counter_bytes').notNull(),
   observedAt: t('observed_at'), collectedAt: t('collected_at').notNull(), quality: text('quality').notNull(),
   rollupApplied: boolean('rollup_applied').notNull().default(false),
-}, (table) => [uniqueIndex('samples_run_client_source_direction_key').on(table.runId, table.clientId, table.source, table.direction), index('samples_client_time_idx').on(table.clientId, table.collectedAt), index('samples_collected_idx').on(table.collectedAt), index('samples_rollup_pending_idx').on(table.siteId, table.rollupApplied, table.collectedAt)]);
+}, (table) => [uniqueIndex('samples_run_client_source_direction_key').on(table.runId, table.clientId, table.source, table.direction), index('samples_client_time_idx').on(table.clientId, table.collectedAt), index('samples_collected_idx').on(table.collectedAt), index('samples_rollup_pending_idx').on(table.siteId, table.collectedAt).where(sql`NOT rollup_applied`)]);
 
 export const trafficIntervals = pgTable('traffic_intervals', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -69,7 +70,7 @@ export const trafficIntervals = pgTable('traffic_intervals', {
   startAt: t('start_at').notNull(), endAt: t('end_at').notNull(), bytes: bytes('bytes').notNull(),
   estimated: boolean('estimated').notNull().default(false),
   rollupApplied: boolean('rollup_applied').notNull().default(false),
-}, (table) => [index('intervals_client_time_idx').on(table.clientId, table.endAt), index('intervals_rollup_pending_idx').on(table.siteId, table.rollupApplied, table.endAt)]);
+}, (table) => [index('intervals_rollup_pending_idx').on(table.siteId, table.rollupApplied, table.endAt)]);
 
 export const trafficRollups = pgTable('traffic_rollups', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -109,8 +110,11 @@ export const agentBuckets = pgTable('agent_buckets', {
   final: boolean('final').notNull(),
   receivedAt: t('received_at').notNull().defaultNow(),
 }, (table) => [uniqueIndex('agent_buckets_key').on(table.siteId, table.subject, table.bucketStart, table.scope, table.direction, table.runId),
-  index('agent_buckets_final_idx').on(table.siteId, table.final, table.bucketStart),
-  index('agent_buckets_unresolved_idx').on(table.siteId, table.bucketStart).where(sql`client_id IS NULL`)]);
+  index('agent_buckets_site_time_idx').on(table.siteId, table.bucketStart),
+  index('agent_buckets_client_time_idx').on(table.clientId, table.bucketStart),
+  // Unattributed rows never resolve, so they stay out of the per-client lookup.
+  index('agent_buckets_unresolved_idx').on(table.siteId, table.subject, table.bucketStart)
+    .where(sql`client_id IS NULL AND subject <> 'unattributed'`)]);
 
 export const agentStatus = pgTable('agent_status', {
   siteId: uuid('site_id').primaryKey().references(() => sites.id),

@@ -1,3 +1,5 @@
+import {UnifiResponseError} from './errors';
+
 export type RawCounter = {source: string; direction: 'rx' | 'tx'; value: bigint; sessionKey: string | null};
 export type ClientSnapshot = {
   mac: string;
@@ -28,21 +30,21 @@ function counter(value: unknown, field: string): bigint {
     const parsed = BigInt(value);
     if (parsed <= 9223372036854775807n) return parsed;
   }
-  throw new Error(`Invalid ${field} counter`);
+  throw new UnifiResponseError(`Invalid ${field} counter`);
 }
 
 /** Preserve source labels until a controlled transfer establishes traffic direction and scope. */
 export function parseClientSnapshot(row: Record<string, unknown>): ClientSnapshot {
   const mac = macString(row.mac);
-  if (!mac) throw new Error('Invalid client MAC');
-  if (typeof row.is_wired !== 'boolean') throw new Error('Missing client connection type');
+  if (!mac) throw new UnifiResponseError('Invalid client MAC');
+  if (typeof row.is_wired !== 'boolean') throw new UnifiResponseError('Missing client connection type');
   const connection = row.is_wired ? 'wired' : 'wireless';
   const prefix = row.is_wired ? 'wired-' : '';
   const rxField = `${prefix}rx_bytes`;
   const txField = `${prefix}tx_bytes`;
   const hasRx = Object.hasOwn(row, rxField);
   const hasTx = Object.hasOwn(row, txField);
-  if (hasRx !== hasTx) throw new Error('Partial client counters');
+  if (hasRx !== hasTx) throw new UnifiResponseError('Partial client counters');
   const session = epochSeconds(row.latest_assoc_time) ?? epochSeconds(row.assoc_time);
   return {
     mac, unifiId: shortString(row._id), name: shortString(row.name) ?? shortString(row.hostname),
@@ -61,7 +63,7 @@ export type DeviceSnapshot = {unifiId: string; mac: string; name: string | null;
 export function parseDeviceSnapshot(row: Record<string, unknown>): DeviceSnapshot {
   const unifiId = shortString(row.id);
   const mac = macString(row.macAddress);
-  if (!unifiId || !mac) throw new Error('Invalid UniFi device identity');
+  if (!unifiId || !mac) throw new UnifiResponseError('Invalid UniFi device identity');
   return {unifiId, mac, name: shortString(row.name), model: shortString(row.model),
     online: row.state === 'ONLINE' ? true : row.state === 'OFFLINE' ? false : null};
 }
@@ -70,9 +72,17 @@ export type ConnectedClientSnapshot = {
   mac: string; unifiId: string | null; name: string | null; ip: string | null;
   connection: 'wired' | 'wireless' | null; uplinkDeviceUnifiId: string | null;
 };
-export function parseConnectedClientSnapshot(row: Record<string, unknown>): ConnectedClientSnapshot {
+/**
+ * Returns null for clients without a MAC address, such as VPN and Teleport
+ * clients. Wired and wireless clients must have one.
+ */
+export function parseConnectedClientSnapshot(row: Record<string, unknown>): ConnectedClientSnapshot | null {
+  if (row.macAddress === undefined || row.macAddress === null) {
+    if (row.type !== 'WIRED' && row.type !== 'WIRELESS') return null;
+    throw new UnifiResponseError('Missing connected client MAC');
+  }
   const mac = macString(row.macAddress);
-  if (!mac) throw new Error('Invalid connected client MAC');
+  if (!mac) throw new UnifiResponseError('Invalid connected client MAC');
   return {mac, unifiId: shortString(row.id), name: shortString(row.name), ip: shortString(row.ipAddress),
     connection: row.type === 'WIRED' ? 'wired' : row.type === 'WIRELESS' ? 'wireless' : null,
     uplinkDeviceUnifiId: shortString(row.uplinkDeviceId)};

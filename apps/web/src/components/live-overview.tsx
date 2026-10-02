@@ -5,7 +5,7 @@ import {QueryClient, QueryClientProvider, useQuery} from '@tanstack/react-query'
 import {Button, Card} from '@heroui/react';
 import Link from 'next/link';
 import {ArrowUpRight, DatabaseZap, RadioTower, UsersRound} from 'lucide-react';
-import {dateTime, runStatus, scopeLabels} from '@/lib/format';
+import {dateTime, errorHint, runStatus, scopeLabels} from '@/lib/format';
 import {formatUsage, TrafficChart, type TrafficData} from '@/components/traffic-chart';
 import {LiveTrafficCard, type TodayUsage} from '@/components/live-traffic';
 
@@ -19,7 +19,8 @@ type Overview = {
   hasMeasuredUsage: boolean;
   traffic: (TrafficData & {scope: 'internet' | 'combined' | 'lan' | 'reported';
     topClients: {id: string; name: string | null; mac: string; totalBytes: string}[]}) | null;
-  latestRun: {status: string; finishedAt: Date | string | null; clientCount: number | null} | null;
+  latestRun: {status: string; errorCode: string | null; finishedAt: Date | string | null; clientCount: number | null} | null;
+  lastSuccessAt: Date | string | null;
   agent: {connected: boolean; version: string | null; lastFrameAt: Date | string | null; lastError: string | null;
     today: TodayUsage | null} | null;
   clientLabels: Record<string, string>;
@@ -60,7 +61,8 @@ function OverviewContents({initialData}: {initialData: Overview}) {
     <div className="metric-grid">
       <Card className="metric-card"><Card.Header><div className="metric-icon"><UsersRound size={19} aria-hidden="true" /></div><Card.Title>클라이언트</Card.Title></Card.Header><Card.Content><p className="metric-value number">{data.clientCount}<span className="ml-1 text-base font-semibold">대</span></p><p className="metric-caption">{data.onlineCount === null || data.offlineCount === null ? '온라인 상태 미확인' : `온라인 ${data.onlineCount}대 · 오프라인 ${data.offlineCount}대`}</p></Card.Content></Card>
       <Card className="metric-card"><Card.Header><div className="metric-icon"><DatabaseZap size={19} aria-hidden="true" /></div><Card.Title>최근 트래픽 정보</Card.Title></Card.Header><Card.Content><p className="metric-value number">{data.rawCounterCount ?? '—'}{data.rawCounterCount !== null && <span className="ml-1 text-base font-semibold">건</span>}</p><p className="metric-caption">{data.latestRun?.status === 'error' ? '최근 수집 실패로 확인할 수 없습니다' : data.rawCounterCount === null ? '첫 수집을 기다리는 중입니다' : '이번 수집에서 받은 정보'}{withoutCounters ? ` · 확인하지 못한 연결 기기 ${withoutCounters}대` : ''}</p></Card.Content></Card>
-      <Card className="metric-card"><Card.Header><div className="metric-icon"><RadioTower size={19} aria-hidden="true" /></div><Card.Title>최근 수집</Card.Title></Card.Header><Card.Content><p className="metric-value text-[1.45rem]">{runStatus(data.latestRun?.status)}</p><p className="metric-caption">{dateTime(latestTime)}{stale ? ' · 90초 이상 지연' : ''}</p></Card.Content></Card>
+      <Card className="metric-card"><Card.Header><div className="metric-icon"><RadioTower size={19} aria-hidden="true" /></div><Card.Title>최근 수집</Card.Title></Card.Header><Card.Content><p className="metric-value text-[1.45rem]">{runStatus(data.latestRun?.status)}</p><p className="metric-caption">{dateTime(latestTime)}{stale ? ' · 90초 이상 지연' : ''}</p>
+        {data.latestRun?.status === 'error' && <p className="metric-caption">{errorHint(data.latestRun.errorCode) ?? data.latestRun.errorCode ?? '원인 미확인'} · 마지막 성공 {data.lastSuccessAt ? dateTime(data.lastSuccessAt) : '없음'}</p>}</Card.Content></Card>
     </div>
     {data.traffic && <div className="grid gap-4 xl:grid-cols-[minmax(0,1.65fr)_minmax(270px,.8fr)]">
       <section className="panel"><div className="section-header"><div><p className="eyebrow">TRAFFIC</p><h2 className="panel-title mt-1">최근 24시간 {scopeLabel} 트래픽</h2></div><span className="pill pill--good">{scopeLabel}</span></div>

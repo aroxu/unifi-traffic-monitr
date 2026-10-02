@@ -344,6 +344,8 @@ docker compose restart collector
 
 **상태·설정** 화면에서 원본 샘플(기본 7일), 5분 집계(90일), 1시간 집계(365일)의 보존 기간을 바꿀 수 있습니다. 원본 ≤ 5분 ≤ 1시간 순서여야 합니다. 오래된 상세 기록은 집계에 합계를 남긴 뒤에 지웁니다.
 
+게이트웨이 에이전트가 보낸 5분 원본 기록은 원본 샘플 기간을 따르되 최소 8일 보관합니다. 같은 값이 5분·1시간 집계에 남아 있으므로 화면에서 사라지는 기록은 없습니다. 최근 수집 기록은 최소 30일 보관합니다. 정리 작업은 UniFi API 수집이 실패하는 동안에도 1시간마다 실행됩니다.
+
 ---
 
 ## 환경 변수
@@ -409,7 +411,7 @@ docker compose logs -f web
 
 ### 인증서 오류
 
-로그의 `Collector cycle failed: <코드>` 또는 **상태·설정 → 최근 수집**의 코드를 확인하세요.
+로그의 `Collector cycle failed: <코드> (<원인>)` 또는 **상태·설정 → 최근 수집**의 코드를 확인하세요. 괄호 안의 원인은 로그에만 남습니다.
 
 | 코드 / 메시지 | 원인 | 해결 |
 | --- | --- | --- |
@@ -431,7 +433,8 @@ docker compose logs -f web
 | `connection_refused`, `host_unreachable`, `timeout` | 게이트웨이에 연결되지 않음 | 호스트에서 `curl` 확인 명령(빠른 시작 4단계)을 실행해 봅니다. 호스트에서는 되는데 컨테이너에서 안 되면 Docker 브리지가 LAN에 닿지 않는 환경입니다. 수집기에 `network_mode: host`를 지정하고, DB 접속은 호스트 포트로 연결합니다. 예시는 [deploy/compose.local.yaml](deploy/compose.local.yaml)을 참고하세요. |
 | `http_401`, `http_403` | API 키가 틀렸거나 권한이 없음 | API 키를 새로 만듭니다. |
 | `http_404` | 주소나 사이트 이름이 다름 | `UNIFI_URL`이 콘솔 주소인지, `UNIFI_SITE`가 `internalReference`와 같은지 확인합니다. |
-| `Site UUID and internal name do not match` | `UNIFI_SITE_UUID`와 `UNIFI_SITE`가 다른 사이트를 가리킴 | 4단계의 `id`와 `internalReference`를 같은 항목에서 가져옵니다. |
+| `unifi_site_mismatch` | `UNIFI_SITE_UUID`와 `UNIFI_SITE`가 다른 사이트를 가리킴 | 4단계의 `id`와 `internalReference`를 같은 항목에서 가져옵니다. |
+| `unifi_response_invalid` | UniFi 응답의 형식이나 값이 예상과 다름 (예: 펌웨어 업데이트로 필드가 바뀜) | 로그의 괄호 안 원인을 확인합니다. MAC 주소가 없는 VPN·Teleport 클라이언트는 이 오류 없이 건너뜁니다. |
 
 ### 에이전트 오류
 

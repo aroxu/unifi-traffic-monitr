@@ -48,7 +48,7 @@ async function sample(index: number): Promise<void> {
       console.log(JSON.stringify({sample: index, elapsedSeconds, status: 'target_missing'}));
       return;
     }
-    const online = connected.data.map(parseConnectedClientSnapshot).find(row => row.mac === target.mac);
+    const online = connected.data.map(parseConnectedClientSnapshot).find(row => row?.mac === target.mac);
     if (!online || (online.connection && online.connection !== target.connection)) {
       previous.clear();
       console.log(JSON.stringify({sample: index, elapsedSeconds,

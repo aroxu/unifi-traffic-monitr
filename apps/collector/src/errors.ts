@@ -1,4 +1,4 @@
-import {UnifiHttpError} from '@utm/unifi';
+import {UnifiHttpError, UnifiResponseError} from '@utm/unifi';
 
 // Socket and TLS failures reach us as fetch TypeErrors whose cause carries a code.
 const causeCodes: Record<string, string> = {
@@ -23,6 +23,8 @@ const causeCodes: Record<string, string> = {
 /** Error code shown on the status page for a failed UniFi request or response. */
 export function classifyUnifiError(error: unknown): string {
   if (error instanceof UnifiHttpError) return `http_${error.status}`;
+  if (error instanceof SiteMismatchError) return 'unifi_site_mismatch';
+  if (error instanceof UnifiResponseError) return 'unifi_response_invalid';
   if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) return 'timeout';
   let current: unknown = error;
   for (let depth = 0; depth < 4 && current instanceof Error; depth++) {
@@ -38,4 +40,24 @@ export class RecordedCycleError extends Error {
   constructor(readonly code: string, cause: unknown) {
     super(code, {cause});
   }
+}
+
+/** UNIFI_SITE_UUID does not belong to the internal site name UNIFI_SITE. */
+export class SiteMismatchError extends Error {
+  constructor() {
+    super('UNIFI_SITE_UUID does not match the internal site name UNIFI_SITE');
+    this.name = 'SiteMismatchError';
+  }
+}
+
+/** One-line reason for the log, following the cause chain. Codes alone cannot tell parse failures apart. */
+export function errorDetail(error: unknown): string {
+  const parts: string[] = [];
+  let current: unknown = error instanceof RecordedCycleError ? error.cause : error;
+  for (let depth = 0; depth < 4 && current instanceof Error; depth++) {
+    const code = (current as NodeJS.ErrnoException).code;
+    parts.push(code && !current.message.includes(code) ? `${current.message} [${code}]` : current.message);
+    current = (current as Error & {cause?: unknown}).cause;
+  }
+  return parts.join(' <- ').replace(/\s+/g, ' ').slice(0, 300) || 'unknown error';
 }

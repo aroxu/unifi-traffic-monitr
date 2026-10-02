@@ -57,6 +57,13 @@
       "when": 1790768121058,
       "tag": "0007_bizarre_lila_cheney",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790923047540,
+      "tag": "0008_strong_centennial",
+      "breakpoints": true
     }
   ]
 }

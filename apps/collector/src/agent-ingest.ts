@@ -1,5 +1,5 @@
 import type {PoolClient} from 'pg';
-import {UNATTRIBUTED, type AgentBucket} from './agent-protocol';
+import type {AgentBucket} from './agent-protocol';
 
 const scopes = ['internet', 'lan'] as const;
 
@@ -21,18 +21,20 @@ async function applyRollups(client: PoolClient, siteId: string, starts: Date[]):
     ON CONFLICT (client_id,scope,direction,resolution,bucket_start) DO UPDATE SET
       bytes=EXCLUDED.bytes, observed_seconds=EXCLUDED.observed_seconds, gap_count=EXCLUDED.gap_count,
       reset_count=0, estimated=false`, [siteId, unique]);
-  // Recompute only the client hours these buckets touched.
+  // Recompute only the client hours these buckets touched. The lateral join
+  // reads each client's five-minute rows through the rollup key instead of
+  // scanning every rollup; OFFSET 0 stops the planner from turning it back
+  // into a plain join.
   await client.query(`INSERT INTO traffic_rollups
       (site_id,client_id,scope,direction,resolution,bucket_start,bytes,observed_seconds,gap_count,reset_count,estimated)
-    WITH touched AS (
-      SELECT DISTINCT client_id, to_timestamp(floor(extract(epoch FROM bucket_start) / 3600) * 3600) AS hour
-      FROM agent_buckets WHERE site_id=$1 AND client_id IS NOT NULL AND bucket_start = ANY($2::timestamptz[]))
-    SELECT $1, r.client_id, r.scope, r.direction, '1h', t.hour, sum(r.bytes)::bigint,
+    SELECT $1, t.client_id, r.scope, r.direction, '1h', t.hour, sum(r.bytes)::bigint,
       LEAST(3600, sum(r.observed_seconds))::int, sum(r.gap_count)::int, 0, false
-    FROM touched t
-    JOIN traffic_rollups r ON r.client_id=t.client_id AND r.resolution='5m' AND r.scope IN ('internet','lan')
-      AND r.bucket_start >= t.hour AND r.bucket_start < t.hour + interval '1 hour'
-    GROUP BY r.client_id, r.scope, r.direction, t.hour
+    FROM (SELECT DISTINCT client_id, date_bin('1 hour', bucket_start, timestamptz '1970-01-01 00:00:00+00') AS hour
+      FROM agent_buckets WHERE site_id=$1 AND client_id IS NOT NULL AND bucket_start = ANY($2::timestamptz[])) t
+    CROSS JOIN LATERAL (SELECT scope, direction, bytes, observed_seconds, gap_count FROM traffic_rollups
+      WHERE client_id=t.client_id AND scope IN ('internet','lan') AND direction IN ('upload','download')
+        AND resolution='5m' AND bucket_start >= t.hour AND bucket_start < t.hour + interval '1 hour' OFFSET 0) r
+    GROUP BY t.client_id, r.scope, r.direction, t.hour
     ON CONFLICT (client_id,scope,direction,resolution,bucket_start) DO UPDATE SET
       bytes=EXCLUDED.bytes, observed_seconds=EXCLUDED.observed_seconds, gap_count=EXCLUDED.gap_count,
       reset_count=0, estimated=false`, [siteId, unique]);
@@ -87,7 +89,9 @@ export async function ingestAgentBuckets(client: PoolClient, siteId: string, buc
 
 /**
  * Attach buckets to clients that the API listed after the agent reported them.
- * since is rounded up to an hour so a partly pruned hour is never rebuilt.
+ * since is rounded up to an hour so a partly pruned hour is never rebuilt. The
+ * literal 'unattributed' lets the planner use the partial index that skips
+ * those rows, so each client is one index probe.
  */
 export async function resolveAgentClients(client: PoolClient, siteId: string, since: Date): Promise<number> {
   const hourStart = new Date(Math.ceil(since.getTime() / 3600000) * 3600000);
@@ -95,10 +99,10 @@ export async function resolveAgentClients(client: PoolClient, siteId: string, si
   try {
     const resolved = await client.query<{bucket_start: Date}>(`WITH updated AS (
         UPDATE agent_buckets b SET client_id=c.id FROM clients c
-        WHERE b.site_id=$1 AND b.client_id IS NULL AND b.subject <> $2 AND b.bucket_start >= $3
+        WHERE b.site_id=$1 AND b.client_id IS NULL AND b.subject <> 'unattributed' AND b.bucket_start >= $2
           AND c.site_id=b.site_id AND c.mac=b.subject
         RETURNING b.bucket_start)
-      SELECT DISTINCT bucket_start FROM updated`, [siteId, UNATTRIBUTED, hourStart]);
+      SELECT DISTINCT bucket_start FROM updated`, [siteId, hourStart]);
     await applyRollups(client, siteId, resolved.rows.map(row => row.bucket_start));
     await client.query('COMMIT');
     return resolved.rows.length;

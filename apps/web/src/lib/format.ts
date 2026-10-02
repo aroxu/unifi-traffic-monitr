@@ -30,6 +30,8 @@ const errorHints: Record<string, string> = {
   http_401: 'API 키 확인',
   http_403: 'API 키 권한 확인',
   http_404: '주소 또는 사이트 확인',
+  unifi_response_invalid: 'UniFi 응답 형식 오류 · collector 로그 확인',
+  unifi_site_mismatch: 'UNIFI_SITE_UUID와 UNIFI_SITE 확인',
   db_write_failed: 'DB 저장 실패'
 };
 /** Short Korean explanation for a collector error code. */

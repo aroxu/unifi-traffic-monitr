@@ -1,5 +1,6 @@
 import {describe, expect, it} from 'vitest';
 import {parseClientSnapshot, parseConnectedClientSnapshot, parseDeviceSnapshot} from './snapshot';
+import {UnifiResponseError} from './errors';
 
 const base = {mac: 'AA:BB:CC:DD:EE:FF', is_wired: true, latest_assoc_time: 1700000000};
 
@@ -34,5 +35,13 @@ describe('raw UniFi snapshot parsing', () => {
     expect(parseConnectedClientSnapshot({macAddress: base.mac, type: 'WIRELESS', uplinkDeviceId: 'ap'}))
       .toMatchObject({mac: 'aa:bb:cc:dd:ee:ff', connection: 'wireless', uplinkDeviceUnifiId: 'ap'});
     expect(() => parseConnectedClientSnapshot({type: 'WIRED'})).toThrow();
+  });
+  it('skips VPN and Teleport clients, which have no MAC address', () => {
+    // Shape returned by UniFi OS 5.1 for a connected Teleport client.
+    expect(parseConnectedClientSnapshot({type: 'TELEPORT', name: 'phone', connectedAt: '2026-10-01T14:03:47Z',
+      ipAddress: '192.168.2.2', access: {type: 'DEFAULT'}})).toBeNull();
+    expect(parseConnectedClientSnapshot({type: 'VPN', macAddress: null})).toBeNull();
+    expect(() => parseConnectedClientSnapshot({type: 'WIRELESS'})).toThrow('Missing connected client MAC');
+    expect(() => parseConnectedClientSnapshot({type: 'TELEPORT', macAddress: 'not-a-mac'})).toThrow(UnifiResponseError);
   });
 });
