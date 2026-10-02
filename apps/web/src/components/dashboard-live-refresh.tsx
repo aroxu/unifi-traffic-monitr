@@ -14,26 +14,34 @@ export function DashboardLiveRefresh() {
   useEffect(() => {
     let source: EventSource | null = null;
     let ready = false;
-    const refresh = () => {
+    const refresh = async () => {
       if (document.visibilityState !== 'visible') return;
-      if (pathnameRef.current === '/') window.dispatchEvent(new Event('utm:collection'));
-      else router.refresh();
+      if (pathnameRef.current === '/') { window.dispatchEvent(new Event('utm:collection')); return; }
+      // Without the event stream the server may be restarting. A failed
+      // refresh makes Next.js fall back to a full page load, which leaves the
+      // browser on its own connection error page.
+      if (!ready) {
+        try {
+          if (!(await fetch('/login', {method: 'HEAD', cache: 'no-store'})).ok) return;
+        } catch { return; }
+      }
+      router.refresh();
     };
     const open = () => {
       if (source || document.visibilityState !== 'visible') return;
       source = new EventSource('/api/overview/events');
-      source.addEventListener('ready', () => { ready = true; setConnected(true); refresh(); });
-      source.addEventListener('refresh', refresh);
+      source.addEventListener('ready', () => { ready = true; setConnected(true); void refresh(); });
+      source.addEventListener('refresh', () => void refresh());
       source.addEventListener('live', event => pushLive((event as MessageEvent<string>).data));
       source.onerror = () => { ready = false; setConnected(false); };
     };
     const visibility = () => {
-      if (document.visibilityState === 'visible') { refresh(); open(); }
+      if (document.visibilityState === 'visible') { void refresh(); open(); }
       else { source?.close(); source = null; ready = false; setConnected(false); }
     };
     document.addEventListener('visibilitychange', visibility);
     open();
-    const fallback = setInterval(() => { if (!ready) refresh(); }, 15000);
+    const fallback = setInterval(() => { if (!ready) void refresh(); }, 15000);
     const staleCheck = setInterval(() => checkLiveStale(), 1000);
     return () => {
       clearInterval(fallback);
