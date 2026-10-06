@@ -2,6 +2,7 @@ import {isIP} from 'node:net';
 import tls from 'node:tls';
 import type {Pool, PoolClient} from 'pg';
 import WebSocket, {type ClientOptions} from 'ws';
+import {withClient} from '@utm/db';
 import {agentResumePoint, ingestAgentBuckets} from './agent-ingest';
 import {buildLivePayload, parseAgentMessage, type AgentMessage} from './agent-protocol';
 
@@ -93,8 +94,7 @@ export class AgentSession {
   }
 
   private async withClient<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
-    try { return await fn(client); } finally { client.release(); }
+    return withClient(client => fn(client), this.pool);
   }
 
   private async connectOnce(signal: AbortSignal): Promise<string> {
@@ -116,6 +116,10 @@ export class AgentSession {
       });
       let chain: Promise<void> = Promise.resolve();
       let reason = '';
+      // After a failed message nothing more is stored from this connection.
+      // Storing later buckets would move the resume point past the failed
+      // ones, and they would never be requested again.
+      let failed = false;
       // Set by hello; every bucket on this connection belongs to that agent run.
       const run = {id: ''};
       let idle: NodeJS.Timeout | undefined;
@@ -138,12 +142,14 @@ export class AgentSession {
           if (isBinary) throw new Error('binary message');
           msg = parseAgentMessage(data.toString());
         } catch (error) {
+          failed = true;
           reason ||= describe(error);
           ws.terminate();
           return;
         }
-        if (msg.type === 'live') { void this.relay(siteId, msg); return; }
-        chain = chain.then(() => this.handle(ws, siteId, run, msg)).catch((error: unknown) => {
+        if (msg.type === 'live') { if (!failed) void this.relay(siteId, msg); return; }
+        chain = chain.then(() => failed ? undefined : this.handle(ws, siteId, run, msg)).catch((error: unknown) => {
+          failed = true;
           reason ||= `storage: ${describe(error)}`;
           ws.terminate();
         });

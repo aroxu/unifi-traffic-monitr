@@ -1,13 +1,16 @@
 import Link from 'next/link';
-import { clientListQuerySchema } from '@utm/contracts';
+import { parseClientListQuery } from '@utm/contracts';
 import { getClients, getDevices } from '@/lib/queries';
 import { dateTime } from '@/lib/format';
 import {ClientFilters} from '@/components/client-filters';
 import {ClientPageSize} from '@/components/client-page-size';
 import {ArrowUpRight, Laptop2} from 'lucide-react';
+import { requireSession } from '@/lib/session';
 export const dynamic = 'force-dynamic';
-export default async function ClientsPage({searchParams}: {searchParams: Promise<Record<string, string | undefined>>}) {
-  const query = clientListQuerySchema.parse(await searchParams);
+export default async function ClientsPage({searchParams}: {searchParams: Promise<Record<string, string | string[] | undefined>>}) {
+  await requireSession();
+  // A hand-edited or stale URL falls back to defaults instead of failing.
+  const query = parseClientListQuery(await searchParams);
   const [data, devices] = await Promise.all([getClients(query), getDevices()]);
   const pageHref = (page: number) => {
     const params = new URLSearchParams({q: query.q, connection: query.connection, sort: query.sort, page: String(page), limit: String(query.limit)});

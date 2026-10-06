@@ -28,7 +28,10 @@ export function DashboardLiveRefresh() {
       router.refresh();
     };
     const open = () => {
-      if (source || document.visibilityState !== 'visible') return;
+      // A stream the browser gave up on (an error response such as 401 or
+      // 503 is not retried) is replaced; a live or reconnecting one is kept.
+      if (document.visibilityState !== 'visible' || (source && source.readyState !== EventSource.CLOSED)) return;
+      source?.close();
       source = new EventSource('/api/overview/events');
       source.addEventListener('ready', () => { ready = true; setConnected(true); void refresh(); });
       source.addEventListener('refresh', () => void refresh());
@@ -41,7 +44,7 @@ export function DashboardLiveRefresh() {
     };
     document.addEventListener('visibilitychange', visibility);
     open();
-    const fallback = setInterval(() => { if (!ready) void refresh(); }, 15000);
+    const fallback = setInterval(() => { if (!ready) { void refresh(); open(); } }, 15000);
     const staleCheck = setInterval(() => checkLiveStale(), 1000);
     return () => {
       clearInterval(fallback);

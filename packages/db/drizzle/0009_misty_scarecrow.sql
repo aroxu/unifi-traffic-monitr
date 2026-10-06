@@ -1,0 +1,2 @@
+ALTER TABLE "settings" ADD CONSTRAINT "settings_single_row" CHECK (id = 1);--> statement-breakpoint
+ALTER TABLE "settings" ADD CONSTRAINT "settings_retention_order" CHECK (raw_retention_days BETWEEN 1 AND 90 AND five_minute_retention_days BETWEEN raw_retention_days AND 365 AND hourly_retention_days BETWEEN five_minute_retention_days AND 3650);

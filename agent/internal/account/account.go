@@ -98,13 +98,6 @@ func (t *Tracker) Baselined() bool { return t.baselined }
 // Tracked returns the number of live flows being compared.
 func (t *Tracker) Tracked() int { return len(t.flows) }
 
-// Reset forgets all flows. The next dump becomes a new baseline.
-func (t *Tracker) Reset() {
-	t.flows = map[FlowKey]*flowState{}
-	t.tombstones = map[FlowKey]tombstone{}
-	t.baselined = false
-}
-
 func advance(s *flowState, f Flow) (uint64, uint64) {
 	var o, r uint64
 	if f.OrigBytes < s.orig || f.ReplyBytes < s.reply {
@@ -195,11 +188,14 @@ func mulDiv(a, b, c uint64) uint64 {
 }
 
 // Split spreads n bytes over [from, to) in proportion to time. The parts
-// always add up to n.
+// always add up to n. Only wall clock time is used: a time from time.Now()
+// also carries a monotonic reading, and mixing the two kinds of reading would
+// let a clock step change the total.
 func Split(n uint64, from, to time.Time) []Part {
 	if n == 0 {
 		return nil
 	}
+	from, to = from.Round(0), to.Round(0)
 	if !to.After(from) {
 		return []Part{{Start: BucketStart(to), Bytes: n}}
 	}
@@ -307,6 +303,7 @@ func (a *Accumulator) Add(subject string, scope Scope, up, down uint64, from, to
 
 // Cover records that accounting was active during [from, to).
 func (a *Accumulator) Cover(from, to time.Time) {
+	from, to = from.Round(0), to.Round(0)
 	for b := BucketStart(from); b.Before(to); b = b.Add(BucketSize) {
 		if b.Before(a.closedThrough) {
 			continue
@@ -349,11 +346,6 @@ func (a *Accumulator) CloseBefore(t time.Time) []*Bucket {
 		a.SetClosedThrough(out[len(out)-1].Start.Add(BucketSize))
 	}
 	return out
-}
-
-// CloseAll removes and returns every open bucket.
-func (a *Accumulator) CloseAll() []*Bucket {
-	return a.CloseBefore(time.Unix(1<<40, 0))
 }
 
 // Snapshot returns copies of the open buckets in time order.

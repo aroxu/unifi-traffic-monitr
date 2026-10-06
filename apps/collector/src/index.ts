@@ -1,4 +1,4 @@
-import { getPool } from '@utm/db';
+import { getPool, withClient } from '@utm/db';
 import { UnifiClient, UnifiHttpError, UnifiResponseError, extractInternalClients, parseClientSnapshot, parseConnectedClientSnapshot, parseDeviceSnapshot, unifiConfigFromEnv } from '@utm/unifi';
 import type { ClientSnapshot, ConnectedClientSnapshot, DeviceSnapshot } from '@utm/unifi';
 import type { PoolClient } from 'pg';
@@ -57,70 +57,74 @@ async function ensureSite(client: PoolClient): Promise<string> {
   return site.rows[0].id;
 }
 
+/** One collection. Another collector process for the same site holds the lock and makes this a no-op. */
 async function cycle(): Promise<void> {
-  const client = await getPool().connect();
-  let locked = false;
   const startedAt = new Date();
-  try {
+  await withClient(async (client, discard) => {
     const lock = await client.query<{ok: boolean}>('SELECT pg_try_advisory_lock(hashtext($1), hashtext($2)) AS ok', ['unifi-traffic-monitor', siteUuid]);
-    locked = lock.rows[0]?.ok ?? false;
-    if (!locked) return;
-    const dbSiteId = await ensureSite(client);
-    let snapshots: ClientSnapshot[];
-    let connected: ConnectedClientSnapshot[];
-    let devices: DeviceSnapshot[];
-    const fetchStarted = Date.now();
+    if (!lock.rows[0]?.ok) return;
     try {
-      const [siteResponse, clientResponse, connectedResponse, deviceResponse] = await Promise.all([
-        unifi.getOfficialSites(), unifi.getInternalClients(), unifi.getOfficialConnectedClients(siteUuid), unifi.getOfficialDevices(siteUuid)
-      ]);
-      const mapped = siteResponse.data.find(row => row.id === siteUuid);
-      if (!mapped || mapped.internalReference !== internalName) throw new SiteMismatchError();
-      snapshots = extractInternalClients(clientResponse).map(parseClientSnapshot);
-      // VPN and Teleport clients have no MAC address. Clients are keyed by MAC, so they are skipped.
-      const listed = connectedResponse.data.map(parseConnectedClientSnapshot);
-      connected = listed.filter((row): row is ConnectedClientSnapshot => row !== null);
-      if (listed.length - connected.length !== skippedWithoutMac) {
-        skippedWithoutMac = listed.length - connected.length;
-        if (skippedWithoutMac) console.log(`Ignoring ${skippedWithoutMac} connected clients without a MAC address (VPN or Teleport)`);
-      }
-      devices = deviceResponse.data.map(parseDeviceSnapshot);
-      if (new Set(snapshots.map(row => row.mac)).size !== snapshots.length) throw new UnifiResponseError('Duplicate client MAC');
-      if (new Set(connected.map(row => row.mac)).size !== connected.length) throw new UnifiResponseError('Duplicate connected client MAC');
-      if (new Set(devices.map(row => row.mac)).size !== devices.length) throw new UnifiResponseError('Duplicate device MAC');
-    } catch (error) {
-      const code = classifyUnifiError(error);
-      await recordError(client, dbSiteId, startedAt, code);
-      throw new RecordedCycleError(code, error);
+      await collect(client, startedAt);
+    } finally {
+      // A lock that cannot be released stays with this session. Closing the
+      // connection releases it.
+      await client.query('SELECT pg_advisory_unlock(hashtext($1), hashtext($2))', ['unifi-traffic-monitor', siteUuid])
+        .catch(() => discard());
     }
-    const fetchMs = Date.now() - fetchStarted;
-    const saveStarted = Date.now();
-    const rawCount = await saveCycle(client, dbSiteId, startedAt, snapshots, connected, devices, counterMappings, maxGapMs);
-    console.log(`Collection succeeded: ${snapshots.length} clients, ${connected.length} connected, ${devices.length} devices, ` +
-      `${rawCount} raw counters (UniFi ${fetchMs} ms, save ${Date.now() - saveStarted} ms)`);
-    if (agentConfig) {
-      try {
-        const resolved = await resolveAgentClients(client, dbSiteId, await currentAgentLedgerCutoff(client));
-        if (resolved) console.log(`Attached gateway agent usage from ${resolved} buckets to newly listed clients`);
-      } catch (error) { console.error(`Gateway agent client matching failed; will retry next cycle: ${errorDetail(error)}`); }
+  });
+}
+
+async function collect(client: PoolClient, startedAt: Date): Promise<void> {
+  const dbSiteId = await ensureSite(client);
+  let snapshots: ClientSnapshot[];
+  let connected: ConnectedClientSnapshot[];
+  let devices: DeviceSnapshot[];
+  const fetchStarted = Date.now();
+  try {
+    const [siteResponse, clientResponse, connectedResponse, deviceResponse] = await Promise.all([
+      unifi.getOfficialSites(), unifi.getInternalClients(), unifi.getOfficialConnectedClients(siteUuid), unifi.getOfficialDevices(siteUuid)
+    ]);
+    const mapped = siteResponse.data.find(row => row.id === siteUuid);
+    if (!mapped || mapped.internalReference !== internalName) throw new SiteMismatchError();
+    snapshots = extractInternalClients(clientResponse).map(parseClientSnapshot);
+    // VPN and Teleport clients have no MAC address. Clients are keyed by MAC, so they are skipped.
+    const listed = connectedResponse.data.map(parseConnectedClientSnapshot);
+    connected = listed.filter((row): row is ConnectedClientSnapshot => row !== null);
+    if (listed.length - connected.length !== skippedWithoutMac) {
+      skippedWithoutMac = listed.length - connected.length;
+      if (skippedWithoutMac) console.log(`Ignoring ${skippedWithoutMac} connected clients without a MAC address (VPN or Teleport)`);
     }
-    try {
-      const backfilled = await backfillPendingRollups(client, dbSiteId);
-      if (backfilled) console.log(`Backfilled ${backfilled} earlier traffic observations`);
-    } catch (error) { console.error(`Traffic rollup backfill failed; will retry next cycle: ${errorDetail(error)}`); }
-  } finally {
-    if (locked) await client.query('SELECT pg_advisory_unlock(hashtext($1), hashtext($2))', ['unifi-traffic-monitor', siteUuid]).catch(() => {});
-    client.release();
+    devices = deviceResponse.data.map(parseDeviceSnapshot);
+    if (new Set(snapshots.map(row => row.mac)).size !== snapshots.length) throw new UnifiResponseError('Duplicate client MAC');
+    if (new Set(connected.map(row => row.mac)).size !== connected.length) throw new UnifiResponseError('Duplicate connected client MAC');
+    if (new Set(devices.map(row => row.mac)).size !== devices.length) throw new UnifiResponseError('Duplicate device MAC');
+  } catch (error) {
+    const code = classifyUnifiError(error);
+    await recordError(client, dbSiteId, startedAt, code);
+    throw new RecordedCycleError(code, error);
   }
+  const fetchMs = Date.now() - fetchStarted;
+  const saveStarted = Date.now();
+  const rawCount = await saveCycle(client, dbSiteId, startedAt, snapshots, connected, devices, counterMappings, maxGapMs);
+  console.log(`Collection succeeded: ${snapshots.length} clients, ${connected.length} connected, ${devices.length} devices, ` +
+    `${rawCount} raw counters (UniFi ${fetchMs} ms, save ${Date.now() - saveStarted} ms)`);
+  if (agentConfig) {
+    try {
+      const resolved = await resolveAgentClients(client, dbSiteId, await currentAgentLedgerCutoff(client));
+      if (resolved) console.log(`Attached gateway agent usage from ${resolved} buckets to newly listed clients`);
+    } catch (error) { console.error(`Gateway agent client matching failed; will retry next cycle: ${errorDetail(error)}`); }
+  }
+  try {
+    const backfilled = await backfillPendingRollups(client, dbSiteId);
+    if (backfilled) console.log(`Backfilled ${backfilled} earlier traffic observations`);
+  } catch (error) { console.error(`Traffic rollup backfill failed; will retry next cycle: ${errorDetail(error)}`); }
 }
 
 /** Retention runs hourly even while UniFi requests fail, because the agent keeps writing. */
 async function maintain(): Promise<void> {
   if (Date.now() - lastMaintenanceAt < 3600000) return;
-  let client: PoolClient | undefined;
   try {
-    client = await getPool().connect();
-    const removed = await pruneExpiredHistory(client, await ensureSite(client));
+    const removed = await withClient(async client => pruneExpiredHistory(client, await ensureSite(client)));
     lastMaintenanceAt = Date.now();
     if (removed.intervals || removed.samples || removed.rollups || removed.agentBuckets || removed.runs) {
       console.log(`Pruned ${removed.intervals} intervals, ${removed.samples} samples, ${removed.rollups} rollups, ` +
@@ -128,8 +132,6 @@ async function maintain(): Promise<void> {
     }
   } catch (error) {
     console.error(`History retention failed; will retry next cycle: ${errorDetail(error)}`);
-  } finally {
-    client?.release();
   }
 }
 

@@ -1,5 +1,10 @@
 # Optional local override for hosts where Docker bridge containers cannot reach the LAN.
 # Keep PostgreSQL on the Compose network and publish it only to host loopback.
+#
+# Build containers on such hosts usually cannot reach the package registry
+# either. Compose 2.36+ builds with Bake, which does not let a Compose file
+# grant host networking, so build the image first and start without --build:
+#   docker build --network host --allow network.host -t unifi-traffic-monitor:local -f deploy/Dockerfile .
 services:
   db:
     ports:
@@ -26,7 +31,7 @@ services:
   web:
     network_mode: host
     ports: !reset []
-    command: ['pnpm', '--filter', '@utm/web', 'start', '--hostname', '127.0.0.1', '--port', '3001']
+    command: ['node', 'apps/web/node_modules/next/dist/bin/next', 'start', 'apps/web', '--hostname', '127.0.0.1', '--port', '3001']
     environment:
       DB_HOST: 127.0.0.1
       DB_PORT: '5433'

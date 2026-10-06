@@ -8,6 +8,7 @@ import {TrafficPeriodSelect} from '@/components/traffic-period-select';
 import {ClientLiveTraffic} from '@/components/live-traffic';
 import {dateTime, scopeLabels as labels} from '@/lib/format';
 import {ArrowLeft, Activity} from 'lucide-react';
+import {requireSession} from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 const periods = { '30m': 30 * 60000, '1h': 3600000, '3h': 3 * 3600000, '6h': 6 * 3600000,
@@ -24,6 +25,7 @@ export default async function ClientPage({params, searchParams}: {
   params: Promise<{id: string}>;
   searchParams: Promise<{period?: string; scope?: string}>;
 }) {
+  await requireSession();
   const {id} = await params;
   if (!isUuid(id)) notFound();
   const client = await getClient(id);

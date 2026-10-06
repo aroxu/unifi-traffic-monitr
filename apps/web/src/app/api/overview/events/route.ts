@@ -15,6 +15,9 @@ export async function GET(request: Request) {
     headers: {'Cache-Control': 'private, no-store'}});
 
   const client = createNotificationClient();
+  // A connection error before the stream below takes over must not end the
+  // web process; an EventEmitter 'error' without a listener throws.
+  client.on('error', () => {});
   activeStreams++;
   try {
     await client.connect();

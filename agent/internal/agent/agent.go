@@ -34,6 +34,9 @@ const (
 	closeGrace = 2 * time.Second
 	// forceClose finalises buckets even when dumps keep failing.
 	forceClose = time.Minute
+	// clockStepLimit is the difference between wall and monotonic elapsed
+	// time above which the system clock is reported as stepped.
+	clockStepLimit = 2 * time.Second
 )
 
 type stats struct {
@@ -42,17 +45,20 @@ type stats struct {
 }
 
 type Agent struct {
-	cfg      config.Config
-	ledger   *store.Memory
-	hub      *server.Hub
-	view     *netinfo.View
-	tracker  *account.Tracker
-	acc      *account.Accumulator
-	live     map[string]*account.Counters
-	lastDump time.Time
-	lastLive time.Time
-	stats    stats
-	events   chan error
+	cfg     config.Config
+	ledger  *store.Memory
+	hub     *server.Hub
+	view    *netinfo.View
+	tracker *account.Tracker
+	acc     *account.Accumulator
+	live    map[string]*account.Counters
+	// lastDump keeps its monotonic clock reading, so time since the previous
+	// dump is measured even if the wall clock is stepped.
+	lastDump   time.Time
+	lastLive   time.Time
+	clockSteps uint64
+	stats      stats
+	events     chan error
 }
 
 func randomID() (string, error) {
@@ -280,34 +286,56 @@ func (a *Agent) destroy(f account.Flow, now time.Time) {
 	if !ok {
 		return
 	}
-	from := a.lastDump
-	if from.IsZero() || from.After(now) {
-		from = now
+	from, to := accountingSpan(a.lastDump, now)
+	a.attribute(d, from, to)
+}
+
+// accountingSpan returns the wall clock interval that the time since prev
+// covers. It ends at the current wall time and lasts as long as the monotonic
+// clock measured, so a wall clock step (NTP, a manual change) neither
+// stretches nor shrinks the interval. A zero prev gives an empty interval.
+func accountingSpan(prev, now time.Time) (from, to time.Time) {
+	to = now.Round(0)
+	if prev.IsZero() {
+		return to, to
 	}
-	a.attribute(d, from, now)
+	return to.Add(-max(now.Sub(prev), 0)), to
+}
+
+// noteClockStep logs when the wall clock moved by a different amount than
+// the monotonic clock since the previous dump.
+func (a *Agent) noteClockStep(now time.Time) {
+	if a.lastDump.IsZero() {
+		return
+	}
+	step := now.Round(0).Sub(a.lastDump.Round(0)) - now.Sub(a.lastDump)
+	if step < clockStepLimit && step > -clockStepLimit {
+		return
+	}
+	a.clockSteps++
+	if a.clockSteps <= 5 || a.clockSteps%100 == 0 {
+		log.Printf("system clock stepped by %s; traffic is placed at the corrected time (%d steps)", step.Round(time.Millisecond), a.clockSteps)
+	}
 }
 
 func (a *Agent) dump(flows []account.Flow, now time.Time) {
-	if !a.lastDump.IsZero() && now.Before(a.lastDump.Add(-time.Minute)) {
-		log.Printf("system clock moved backwards; finalising open buckets and starting a new baseline")
-		a.finalize(a.acc.CloseAll())
-		a.acc = account.NewAccumulator()
-		a.tracker.Reset()
-		a.lastDump = time.Time{}
-	}
+	// After a backward step the corrected times fall before buckets that were
+	// already sent as final. The accumulator then adds the bytes to its first
+	// open bucket, so no final bucket is sent twice with different values.
+	a.noteClockStep(now)
 	baselined := a.tracker.Baselined()
 	deltas := a.tracker.Dump(flows, now)
-	from := a.lastDump
-	if baselined && !from.IsZero() {
-		a.acc.Cover(from, now)
+	from, to := accountingSpan(a.lastDump, now)
+	if baselined && !a.lastDump.IsZero() {
+		a.acc.Cover(from, to)
 	} else {
-		from = now
+		from = to
 	}
 	for _, d := range deltas {
-		a.attribute(d, from, now)
+		a.attribute(d, from, to)
 	}
 	a.lastDump = now
-	a.closeBuckets(now.Add(-closeGrace))
+	a.closeBuckets(to.Add(-closeGrace))
 	a.emitLive(now)
 }
 

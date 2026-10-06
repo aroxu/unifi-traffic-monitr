@@ -41,13 +41,17 @@ function Rate({icon, label, value, tone}: {icon: 'down' | 'up'; label: string; v
   </div>;
 }
 
-/** Stored usage plus the live bytes that arrived after it was saved. */
+const seoulOffsetMs = 9 * 3600000;
+/** Start of the current day in Korea, which has no daylight saving time. */
+const startOfToday = (now: number) => Math.floor((now + seoulOffsetMs) / 86400000) * 86400000 - seoulOffsetMs;
+
+/** Stored usage plus the live bytes that arrived after it was saved, counting only today's frames. */
 function todayWithLive(base: TodayUsage | null, frames: LiveFrame[], pick: (f: LiveFrame) => Rates): TodayUsage | null {
   if (!base) return null;
-  const asOf = base.asOf ? Date.parse(base.asOf) : 0;
+  const after = Math.max(base.asOf ? Date.parse(base.asOf) : 0, startOfToday(Date.now()) - 1);
   const add: Rates = [0, 0, 0, 0];
   for (const frame of frames) {
-    if (frame.at <= asOf) continue;
+    if (frame.at <= after) continue;
     const rates = pick(frame);
     for (let i = 0; i < 4; i++) add[i] += rates[i] * frame.intervalMs / 1000;
   }

@@ -1,6 +1,6 @@
 import 'server-only';
 import { and, asc, desc, eq, ilike, ne, or, sql } from 'drizzle-orm';
-import { clientSamples, clients, collectorRuns, devices, getDb, getOverviewTraffic, getPool, sites } from '@utm/db';
+import { clientSamples, clients, collectorRuns, devices, getDb, getOverviewTraffic, getPool, sites, withClient } from '@utm/db';
 import type {ClientListQuery} from '@utm/contracts';
 import type {Pool, PoolClient} from 'pg';
 
@@ -36,48 +36,50 @@ export async function getClientAgentToday(clientId: string): Promise<AgentToday 
 }
 
 export async function getOverview() {
-  const client = await getPool().connect();
-  try {
+  return withClient(async client => {
+    // One snapshot for the whole page. A connection runs one query at a time,
+    // so the queries are awaited in turn.
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-    const db = getDb(client);
-    const end = new Date();
-    const [siteRows, clientCount, onlineStatus, latestRun, lastSuccess] = await Promise.all([
-      db.select({id: sites.id, label: sites.label}).from(sites).orderBy(desc(sites.createdAt)).limit(10),
-      db.select({count: sql<number>`count(*)::int`}).from(clients),
-      db.select({known: sql<number>`count(${clients.online})::int`, online: sql<number>`count(*) filter (where ${clients.online} = true)::int`, offline: sql<number>`count(*) filter (where ${clients.online} = false)::int`}).from(clients),
-      db.select().from(collectorRuns).orderBy(desc(collectorRuns.startedAt)).limit(1),
-      db.select({startedAt: collectorRuns.startedAt}).from(collectorRuns).where(ne(collectorRuns.status, 'error'))
-        .orderBy(desc(collectorRuns.startedAt)).limit(1)
-    ]);
-    const [measured, traffic, agentRows, labelRows, todayUsage] = siteRows[0] ? await Promise.all([
-      client.query<{present: boolean}>(`SELECT EXISTS (SELECT 1 FROM traffic_rollups
-        WHERE site_id=$1 AND observed_seconds>0 LIMIT 1) AS present`, [siteRows[0].id]),
-      getOverviewTraffic(new Date(end.getTime() - 86400000), end, siteRows[0].id, client),
-      client.query<{connected: boolean; agent_version: string | null; last_frame_at: Date | null; last_error: string | null}>(
+    try {
+      const db = getDb(client);
+      const end = new Date();
+      const siteRows = await db.select({id: sites.id, label: sites.label}).from(sites).orderBy(desc(sites.createdAt)).limit(10);
+      const [counts] = await db.select({total: sql<number>`count(*)::int`, known: sql<number>`count(${clients.online})::int`,
+        online: sql<number>`count(*) filter (where ${clients.online} = true)::int`,
+        offline: sql<number>`count(*) filter (where ${clients.online} = false)::int`}).from(clients);
+      const [latestRun] = await db.select().from(collectorRuns).orderBy(desc(collectorRuns.startedAt)).limit(1);
+      const [lastSuccess] = await db.select({startedAt: collectorRuns.startedAt}).from(collectorRuns)
+        .where(ne(collectorRuns.status, 'error')).orderBy(desc(collectorRuns.startedAt)).limit(1);
+      const site = siteRows[0];
+      const measured = site ? (await client.query<{present: boolean}>(`SELECT EXISTS (SELECT 1 FROM traffic_rollups
+        WHERE site_id=$1 AND observed_seconds>0 LIMIT 1) AS present`, [site.id])).rows[0]?.present ?? false : false;
+      const traffic = site ? await getOverviewTraffic(new Date(end.getTime() - 86400000), end, site.id, client) : null;
+      const agentRow = site ? (await client.query<{connected: boolean | null; agent_version: string | null;
+        last_frame_at: Date | null; last_error: string | null}>(
         `SELECT connected AND last_frame_at > now() - interval '60 seconds' AS connected, agent_version, last_frame_at, last_error
-          FROM agent_status WHERE site_id=$1`, [siteRows[0].id]),
-      client.query<{id: string; label: string}>('SELECT id, COALESCE(name, mac) AS label FROM clients WHERE site_id=$1', [siteRows[0].id]),
-      agentToday(client, siteRows[0].id)
-    ]) : [null, null, null, null, null];
-    const rawSamples = latestRun[0] && latestRun[0].status !== 'error'
-      ? await db.select({count: sql<number>`count(*)::int`,
+          FROM agent_status WHERE site_id=$1`, [site.id])).rows[0] : undefined;
+      const labelRows = site ? (await client.query<{id: string; label: string}>(
+        'SELECT id, COALESCE(name, mac) AS label FROM clients WHERE site_id=$1', [site.id])).rows : [];
+      const todayUsage = site && agentRow ? await agentToday(client, site.id) : null;
+      const ran = latestRun && latestRun.status !== 'error';
+      const [rawSamples] = ran ? await db.select({count: sql<number>`count(*)::int`,
         clients: sql<number>`count(distinct ${clientSamples.clientId})::int`})
-        .from(clientSamples).where(eq(clientSamples.runId, latestRun[0].id)) : [];
-    await client.query('COMMIT');
-    const agentRow = agentRows?.rows[0];
-    return {sites: siteRows, clientCount: clientCount[0]?.count ?? 0, onlineCount: onlineStatus[0]?.known ? onlineStatus[0].online : null,
-      offlineCount: onlineStatus[0]?.known ? onlineStatus[0].offline : null,
-      latestRun: latestRun[0] ?? null, lastSuccessAt: lastSuccess[0]?.startedAt ?? null,
-      rawCounterCount: latestRun[0] && latestRun[0].status !== 'error' ? rawSamples[0]?.count ?? 0 : null,
-      counterClientCount: latestRun[0] && latestRun[0].status !== 'error' ? rawSamples[0]?.clients ?? 0 : null,
-      hasMeasuredUsage: measured?.rows[0]?.present ?? false, traffic,
-      agent: agentRow ? {connected: agentRow.connected, version: agentRow.agent_version, lastFrameAt: agentRow.last_frame_at,
-        lastError: agentRow.last_error, today: todayUsage} : null,
-      clientLabels: Object.fromEntries((labelRows?.rows ?? []).map(row => [row.id, row.label]))};
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw error;
-  } finally { client.release(); }
+        .from(clientSamples).where(eq(clientSamples.runId, latestRun.id)) : [];
+      await client.query('COMMIT');
+      return {sites: siteRows, clientCount: counts?.total ?? 0, onlineCount: counts?.known ? counts.online : null,
+        offlineCount: counts?.known ? counts.offline : null,
+        latestRun: latestRun ?? null, lastSuccessAt: lastSuccess?.startedAt ?? null,
+        rawCounterCount: ran ? rawSamples?.count ?? 0 : null,
+        counterClientCount: ran ? rawSamples?.clients ?? 0 : null,
+        hasMeasuredUsage: measured, traffic,
+        agent: agentRow ? {connected: agentRow.connected === true, version: agentRow.agent_version, lastFrameAt: agentRow.last_frame_at,
+          lastError: agentRow.last_error, today: todayUsage} : null,
+        clientLabels: Object.fromEntries(labelRows.map(row => [row.id, row.label]))};
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    }
+  });
 }
 
 export async function getClients({q, page, limit, connection, deviceId, sort}: ClientListQuery) {

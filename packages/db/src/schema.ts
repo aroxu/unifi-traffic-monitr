@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { bigint, boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, check, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 
 const t = (name: string) => timestamp(name, { withTimezone: true, mode: 'date' });
 const bytes = (name: string) => bigint(name, { mode: 'bigint' });
@@ -91,7 +91,9 @@ export const settings = pgTable('settings', {
   fiveMinuteRetentionDays: integer('five_minute_retention_days').notNull().default(90),
   hourlyRetentionDays: integer('hourly_retention_days').notNull().default(365),
   updatedAt: t('updated_at').notNull().defaultNow(),
-});
+}, () => [check('settings_single_row', sql`id = 1`),
+  // Retention removes detail only after the coarser summaries that keep its totals.
+  check('settings_retention_order', sql`raw_retention_days BETWEEN 1 AND 90 AND five_minute_retention_days BETWEEN raw_retention_days AND 365 AND hourly_retention_days BETWEEN five_minute_retention_days AND 3650`)]);
 
 /** Five-minute ledger received from the gateway agent, keyed by MAC address. */
 export const agentBuckets = pgTable('agent_buckets', {

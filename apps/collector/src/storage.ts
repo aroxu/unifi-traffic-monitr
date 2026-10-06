@@ -28,6 +28,10 @@ export async function saveCycle(client: PoolClient, dbSiteId: string, startedAt:
       deviceIds.set(device.mac, result.rows[0].id);
       deviceIdsByUnifi.set(device.unifiId, result.rows[0].id);
     }
+    // The official list holds every adopted device, online or not. A device
+    // missing from it was removed from the controller.
+    await client.query(`UPDATE devices SET online=false WHERE site_id=$1 AND online IS DISTINCT FROM false
+      AND unifi_id <> ALL($2::text[])`, [dbSiteId, devices.map(device => device.unifiId)]);
     const activeMacs = [...new Set(connected.map(row => row.mac))];
     const connectedMacs = new Set(activeMacs);
     const connectionByMac = new Map(connected.map(row => [row.mac, row.connection]));

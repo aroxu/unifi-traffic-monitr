@@ -20,6 +20,20 @@ const connected = (count: number): ConnectedClientSnapshot[] => snapshots(0n).sl
 describe.skipIf(process.env.DB_INTEGRATION !== '1')('PostgreSQL connected client reconciliation', () => {
   afterAll(async () => { await getPool().end(); });
 
+  it('marks a device that left the official device list offline', async () => {
+    const db = await getPool().connect();
+    try {
+      const site = (await db.query<{id: string}>(`INSERT INTO sites (unifi_id,internal_name,label)
+        VALUES ($1,'default','test') RETURNING id`, [`devices-${randomUUID()}`])).rows[0].id;
+      const device = (id: string, mac: string) => ({unifiId: id, mac, name: null, model: null, online: true});
+      await saveCycle(db, site, new Date(), [], [], [device('ap-a', '00:00:00:00:0b:01'), device('ap-b', '00:00:00:00:0b:02')], mapping, 600000);
+      await saveCycle(db, site, new Date(), [], [], [device('ap-a', '00:00:00:00:0b:01')], mapping, 600000);
+      const rows = await db.query<{unifi_id: string; online: boolean}>(
+        'SELECT unifi_id, online FROM devices WHERE site_id=$1 ORDER BY unifi_id', [site]);
+      expect(rows.rows).toEqual([{unifi_id: 'ap-a', online: true}, {unifi_id: 'ap-b', online: false}]);
+    } finally { db.release(); }
+  });
+
   it('rebases counters when official and internal connection types disagree', async () => {
     const db = await getPool().connect();
     try {

@@ -110,7 +110,7 @@ export async function backfillPendingRollups(client: PoolClient, siteId: string,
     await client.query('COMMIT');
     return intervals.rows.length + anomalies.rows.length + (ordinary.rowCount ?? 0);
   } catch (error) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => {});
     throw error;
   }
 }

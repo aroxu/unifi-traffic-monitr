@@ -64,6 +64,13 @@
       "when": 1790923047540,
       "tag": "0008_strong_centennial",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791267135871,
+      "tag": "0009_misty_scarecrow",
+      "breakpoints": true
     }
   ]
 }

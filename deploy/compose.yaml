@@ -18,7 +18,6 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-      network: host
     image: ${UTM_IMAGE:-unifi-traffic-monitor:local}
     command: ["pnpm", "db:migrate"]
     environment:

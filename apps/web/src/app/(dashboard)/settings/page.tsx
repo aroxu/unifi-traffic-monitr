@@ -4,8 +4,10 @@ import { getAgentStatus, getAgentUnattributed, getLatestRuns } from '@/lib/queri
 import { getMeasuredScopes } from '@/lib/traffic';
 import { dateTime, errorHint, formatUsage, runStatus, scopeLabels } from '@/lib/format';
 import {RetentionSettings} from '@/components/retention-settings';
+import { requireSession } from '@/lib/session';
 export const dynamic = 'force-dynamic';
 export default async function SettingsPage() {
+  await requireSession();
   const [runs, values, scopes, agent, unattributed] = await Promise.all([getLatestRuns(), getDb().select().from(settings).where(eq(settings.id, 1)),
     getMeasuredScopes(), getAgentStatus(), getAgentUnattributed()]);
   const current = values[0] ?? {timezone: 'Asia/Seoul', rawRetentionDays: 7, fiveMinuteRetentionDays: 90, hourlyRetentionDays: 365};

@@ -16,3 +16,15 @@ export const clientListQuerySchema = z.object({
   sort: z.enum(['recent', 'name']).default('recent'),
 });
 export type ClientListQuery = z.infer<typeof clientListQuerySchema>;
+
+/** Read list filters from page URL parameters. Each missing or invalid value gets its default. */
+export function parseClientListQuery(params: Record<string, string | string[] | undefined>): ClientListQuery {
+  const shape = clientListQuerySchema.shape;
+  const field = <K extends keyof typeof shape>(key: K): ClientListQuery[K] => {
+    const raw = params[key];
+    const parsed = shape[key].safeParse(Array.isArray(raw) ? raw[0] : raw);
+    return (parsed.success ? parsed.data : shape[key].parse(undefined)) as ClientListQuery[K];
+  };
+  return {q: field('q'), page: field('page'), limit: field('limit'), connection: field('connection'),
+    deviceId: field('deviceId'), sort: field('sort')};
+}

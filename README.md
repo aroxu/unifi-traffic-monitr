@@ -480,7 +480,7 @@ docker compose --env-file .env -f deploy/compose.yaml --profile collector up -d 
 docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.ghcr.yaml --profile collector up -d
 ```
 
-Docker 브리지에서 LAN에 닿지 않는 호스트는 [deploy/compose.local.yaml](deploy/compose.local.yaml)을 추가합니다. 수집기와 웹을 호스트 네트워크로 실행하고, DB는 `127.0.0.1:5433`에만 공개합니다. 백업은 `./deploy/backup.sh <파일>`, 수집 공백 관찰은 `./deploy/observe.sh <시작 시각>`으로 합니다.
+Docker 브리지에서 LAN에 닿지 않는 호스트는 [deploy/compose.local.yaml](deploy/compose.local.yaml)을 추가합니다. 수집기와 웹을 호스트 네트워크로 실행하고, DB는 `127.0.0.1:5433`에만 공개합니다. 이런 호스트는 빌드 중에도 패키지 저장소에 닿지 않는 경우가 많습니다. 그때는 이미지를 먼저 `docker build --network host --allow network.host -t unifi-traffic-monitor:local -f deploy/Dockerfile .`로 빌드하고 `--build` 없이 실행합니다. Compose 2.36 이후의 빌드 방식(Bake)은 Compose 파일만으로 호스트 네트워크 빌드를 허용하지 않습니다. 백업은 `./deploy/backup.sh <파일>`, 수집 공백 관찰은 `./deploy/observe.sh <시작 시각>`으로 합니다.
 
 </details>
 

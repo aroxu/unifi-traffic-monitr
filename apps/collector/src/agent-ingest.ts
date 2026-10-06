@@ -4,6 +4,15 @@ import type {AgentBucket} from './agent-protocol';
 const scopes = ['internet', 'lan'] as const;
 
 /**
+ * Ledger writers for a site run one at a time. Storing agent buckets and
+ * attaching buckets to newly listed clients rebuild overlapping rollup rows
+ * from different connections, which could otherwise deadlock.
+ */
+async function lockLedger(client: PoolClient, siteId: string): Promise<void> {
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', ['utm-agent-ledger', siteId]);
+}
+
+/**
  * Rebuild agent-owned rollups for the given buckets. Both resolutions are
  * replaced, never added. Rows from different agent runs of the same bucket are
  * summed, because a restarted agent counts that bucket again from zero.
@@ -62,6 +71,7 @@ export async function ingestAgentBuckets(client: PoolClient, siteId: string, buc
   }
   await client.query('BEGIN');
   try {
+    await lockLedger(client, siteId);
     if (subject.length) {
       await client.query(`INSERT INTO agent_buckets
           (site_id,subject,bucket_start,scope,direction,bytes,coverage_seconds,final,client_id,received_at,run_id)
@@ -97,6 +107,7 @@ export async function resolveAgentClients(client: PoolClient, siteId: string, si
   const hourStart = new Date(Math.ceil(since.getTime() / 3600000) * 3600000);
   await client.query('BEGIN');
   try {
+    await lockLedger(client, siteId);
     const resolved = await client.query<{bucket_start: Date}>(`WITH updated AS (
         UPDATE agent_buckets b SET client_id=c.id FROM clients c
         WHERE b.site_id=$1 AND b.client_id IS NULL AND b.subject <> 'unattributed' AND b.bucket_start >= $2
