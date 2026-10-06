@@ -110,7 +110,7 @@ async function collect(client: PoolClient, startedAt: Date): Promise<void> {
     `${rawCount} raw counters (UniFi ${fetchMs} ms, save ${Date.now() - saveStarted} ms)`);
   if (agentConfig) {
     try {
-      const resolved = await resolveAgentClients(client, dbSiteId, await currentAgentLedgerCutoff(client));
+      const resolved = await resolveAgentClients(client, dbSiteId, await currentAgentLedgerCutoff(client, dbSiteId));
       if (resolved) console.log(`Attached gateway agent usage from ${resolved} buckets to newly listed clients`);
     } catch (error) { console.error(`Gateway agent client matching failed; will retry next cycle: ${errorDetail(error)}`); }
   }

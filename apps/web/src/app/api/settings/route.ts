@@ -1,11 +1,10 @@
 import { eq } from 'drizzle-orm';
-import { getDb, getPool, settings } from '@utm/db';
+import { getDb, getPool, settings, settingsDefaults as defaults } from '@utm/db';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { authorized, privateResponse } from '@/lib/api';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-const defaults = {timezone: 'Asia/Seoul', rawRetentionDays: 7, fiveMinuteRetentionDays: 90, hourlyRetentionDays: 365};
 const patchSchema = z.object({
   timezone: z.literal('Asia/Seoul').optional(),
   rawRetentionDays: z.number().int().min(1).max(90).optional(),

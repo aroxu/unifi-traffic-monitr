@@ -1,17 +1,23 @@
 import type {PoolClient} from 'pg';
+import {settingsDefaults} from '@utm/db';
+import {agentResumePoint} from './agent-ingest';
 
 type Retention = {raw_retention_days: number; five_minute_retention_days: number; hourly_retention_days: number};
 
 const day = 86400000;
-// The agent keeps at most 7 days in memory, so a replay never needs older ledger rows.
-const minAgentLedgerDays = 8;
+const hour = 3600000;
+// The agent buffers at most 7 days in memory (AGENT_BUFFER_HOURS <= 168), so it
+// never replays an older bucket. The extra day covers clock differences.
+const maxAgentReplayDays = 8;
 // Collection runs stay a month for troubleshooting, or longer while samples still refer to them.
 const minRunHistoryDays = 30;
 
 async function retentionDays(client: PoolClient): Promise<Retention> {
   const result = await client.query<Retention>(`SELECT raw_retention_days,five_minute_retention_days,hourly_retention_days
     FROM settings WHERE id=1`);
-  const days = result.rows[0] ?? {raw_retention_days: 7, five_minute_retention_days: 90, hourly_retention_days: 365};
+  const days = result.rows[0] ?? {raw_retention_days: settingsDefaults.rawRetentionDays,
+    five_minute_retention_days: settingsDefaults.fiveMinuteRetentionDays,
+    hourly_retention_days: settingsDefaults.hourlyRetentionDays};
   const {raw_retention_days: raw, five_minute_retention_days: five, hourly_retention_days: hourly} = days;
   if (![raw, five, hourly].every(Number.isSafeInteger) || raw < 1 || raw > 90 ||
       five < raw || five > 365 || hourly < five || hourly > 3650) throw new Error('Invalid retention settings');
@@ -19,15 +25,19 @@ async function retentionDays(client: PoolClient): Promise<Retention> {
 }
 
 /**
- * Oldest gateway agent bucket worth keeping. The ledger is raw data: its
- * totals already live in the five-minute and hourly rollups.
+ * Oldest gateway agent bucket worth keeping. The ledger is raw data whose
+ * totals already live in the rollups, so it follows raw retention. A replayed
+ * bucket rebuilds its rollups from every stored row of that bucket, so rows
+ * after the resume point stay while the agent may still send them again.
  */
-export function agentLedgerCutoff(rawRetentionDays: number, now = new Date()): Date {
-  return new Date(now.getTime() - Math.max(rawRetentionDays, minAgentLedgerDays) * day);
+export function agentLedgerCutoff(rawRetentionDays: number, resumePoint: Date | null, now = new Date()): Date {
+  const replayable = Math.max(resumePoint?.getTime() ?? -Infinity, now.getTime() - maxAgentReplayDays * day);
+  return new Date(Math.min(now.getTime() - rawRetentionDays * day, replayable));
 }
 
-export async function currentAgentLedgerCutoff(client: PoolClient, now = new Date()): Promise<Date> {
-  return agentLedgerCutoff((await retentionDays(client)).raw_retention_days, now);
+export async function currentAgentLedgerCutoff(client: PoolClient, siteId: string, now = new Date()): Promise<Date> {
+  const days = await retentionDays(client);
+  return agentLedgerCutoff(days.raw_retention_days, await agentResumePoint(client, siteId), now);
 }
 
 async function deleteBatches(client: PoolClient, query: string, values: unknown[]): Promise<number> {
@@ -66,7 +76,11 @@ export async function pruneExpiredHistory(client: PoolClient, siteId: string, no
     ORDER BY end_at LIMIT 10000
   ) DELETE FROM traffic_intervals t USING stale WHERE t.id=stale.id RETURNING t.id`, [siteId, rawCutoff]);
   const samples = await pruneSamples(client, siteId, rawCutoff);
-  const fiveCutoff = new Date(now.getTime() - days.five_minute_retention_days * day);
+  const ledgerCutoff = agentLedgerCutoff(days.raw_retention_days, await agentResumePoint(client, siteId), now);
+  // An agent bucket rebuilds the hourly rollup from the five-minute rows of its
+  // hour, so those rows stay while the ledger can still change that hour.
+  const fiveCutoff = new Date(Math.min(now.getTime() - days.five_minute_retention_days * day,
+    Math.floor(ledgerCutoff.getTime() / hour) * hour));
   const hourCutoff = new Date(now.getTime() - days.hourly_retention_days * day);
   const rollups = await deleteBatches(client, `WITH stale AS (
     SELECT id FROM traffic_rollups WHERE site_id=$1 AND
@@ -76,7 +90,7 @@ export async function pruneExpiredHistory(client: PoolClient, siteId: string, no
     [siteId, fiveCutoff, hourCutoff]);
   const agentBuckets = await deleteBatches(client, `WITH stale AS (
     SELECT id FROM agent_buckets WHERE site_id=$1 AND bucket_start < $2 ORDER BY bucket_start LIMIT 10000
-  ) DELETE FROM agent_buckets b USING stale WHERE b.id=stale.id RETURNING b.id`, [siteId, agentLedgerCutoff(days.raw_retention_days, now)]);
+  ) DELETE FROM agent_buckets b USING stale WHERE b.id=stale.id RETURNING b.id`, [siteId, ledgerCutoff]);
   const runCutoff = new Date(now.getTime() - Math.max(days.raw_retention_days, minRunHistoryDays) * day);
   const runs = await deleteBatches(client, `WITH stale AS (
     SELECT r.id FROM collector_runs r WHERE r.site_id=$1 AND r.started_at < $2

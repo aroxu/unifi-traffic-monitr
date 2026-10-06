@@ -84,12 +84,17 @@ export const trafficRollups = pgTable('traffic_rollups', {
 }, (table) => [uniqueIndex('rollups_client_bucket_key').on(table.clientId, table.scope, table.direction, table.resolution, table.bucketStart),
   index('rollups_scope_resolution_time_idx').on(table.scope, table.resolution, table.bucketStart)]);
 
+/** Values in effect until an administrator saves the settings row. */
+export const settingsDefaults = Object.freeze({
+  timezone: 'Asia/Seoul', rawRetentionDays: 3, fiveMinuteRetentionDays: 90, hourlyRetentionDays: 365
+});
+
 export const settings = pgTable('settings', {
   id: integer('id').primaryKey().default(1),
-  timezone: text('timezone').notNull().default('Asia/Seoul'),
-  rawRetentionDays: integer('raw_retention_days').notNull().default(7),
-  fiveMinuteRetentionDays: integer('five_minute_retention_days').notNull().default(90),
-  hourlyRetentionDays: integer('hourly_retention_days').notNull().default(365),
+  timezone: text('timezone').notNull().default(settingsDefaults.timezone),
+  rawRetentionDays: integer('raw_retention_days').notNull().default(settingsDefaults.rawRetentionDays),
+  fiveMinuteRetentionDays: integer('five_minute_retention_days').notNull().default(settingsDefaults.fiveMinuteRetentionDays),
+  hourlyRetentionDays: integer('hourly_retention_days').notNull().default(settingsDefaults.hourlyRetentionDays),
   updatedAt: t('updated_at').notNull().defaultNow(),
 }, () => [check('settings_single_row', sql`id = 1`),
   // Retention removes detail only after the coarser summaries that keep its totals.

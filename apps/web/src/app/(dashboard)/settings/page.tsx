@@ -1,4 +1,4 @@
-import { getDb, settings } from '@utm/db';
+import { getDb, settings, settingsDefaults } from '@utm/db';
 import { eq } from 'drizzle-orm';
 import { getAgentStatus, getAgentUnattributed, getLatestRuns } from '@/lib/queries';
 import { getMeasuredScopes } from '@/lib/traffic';
@@ -10,7 +10,7 @@ export default async function SettingsPage() {
   await requireSession();
   const [runs, values, scopes, agent, unattributed] = await Promise.all([getLatestRuns(), getDb().select().from(settings).where(eq(settings.id, 1)),
     getMeasuredScopes(), getAgentStatus(), getAgentUnattributed()]);
-  const current = values[0] ?? {timezone: 'Asia/Seoul', rawRetentionDays: 7, fiveMinuteRetentionDays: 90, hourlyRetentionDays: 365};
+  const current = values[0] ?? settingsDefaults;
   const labels: Record<string, string> = {...scopeLabels, reported: '컨트롤러 제공(범위 미확인)'};
   return <div className="space-y-6"><div className="page-heading"><div><p className="eyebrow mb-2">SYSTEM</p><h1>상태 · 설정</h1><p>수집 이력과 데이터 보존 기간을 관리합니다.</p></div></div>
     {agent && <section className="panel"><div className="section-header"><div><p className="eyebrow">GATEWAY AGENT</p><h2 className="panel-title mt-1">게이트웨이 에이전트</h2>

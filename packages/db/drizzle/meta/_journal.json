@@ -71,6 +71,13 @@
       "when": 1791267135871,
       "tag": "0009_misty_scarecrow",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791269886603,
+      "tag": "0010_big_santa_claus",
+      "breakpoints": true
     }
   ]
 }

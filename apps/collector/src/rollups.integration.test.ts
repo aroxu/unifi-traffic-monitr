@@ -1,6 +1,8 @@
 import {afterAll, describe, expect, it} from 'vitest';
 import {randomUUID} from 'node:crypto';
 import {getAvailableClientScopes, getClientTraffic, getOverviewTraffic, getPool} from '@utm/db';
+import {ingestAgentBuckets} from './agent-ingest';
+import type {AgentBucket} from './agent-protocol';
 import {pruneExpiredHistory} from './maintenance';
 import {backfillPendingRollups, recordIntervalRollups, recordQualityRollups} from './rollups';
 
@@ -211,16 +213,56 @@ describe.skipIf(process.env.DB_INTEGRATION !== '1')('PostgreSQL traffic rollups'
       const bucket = (at: Date) => db.query(`INSERT INTO agent_buckets
         (site_id,subject,client_id,bucket_start,scope,direction,bytes,coverage_seconds,final)
         VALUES ($1,'00:00:00:00:02:01',$2,$3,'internet','download',5,300,true)`, [site, client, at]);
-      await bucket(daysAgo(9));
-      await bucket(daysAgo(7));
+      const lastFinal = new Date(now.getTime() - 3600000);
+      await bucket(daysAgo(4));
+      await bucket(daysAgo(2));
+      await bucket(lastFinal);
 
-      // Raw retention is 3 days, but the agent ledger keeps at least 8 and runs at least 30.
+      // The agent is caught up, so its ledger follows the 3-day raw retention. Runs stay at least 30 days.
       expect(await pruneExpiredHistory(db, site, now)).toMatchObject({runs: 1, agentBuckets: 1});
       const runs = await db.query<{id: string}>('SELECT id FROM collector_runs WHERE site_id=$1 ORDER BY id', [site]);
       expect(runs.rows.map(row => row.id)).toEqual([referenced, recent].sort());
       expect(runs.rows.map(row => row.id)).not.toContain(expired);
-      const ledger = await db.query<{bucket_start: Date}>('SELECT bucket_start FROM agent_buckets WHERE site_id=$1', [site]);
-      expect(ledger.rows.map(row => row.bucket_start.toISOString())).toEqual([daysAgo(7).toISOString()]);
+      const ledger = await db.query<{bucket_start: Date}>(
+        'SELECT bucket_start FROM agent_buckets WHERE site_id=$1 ORDER BY bucket_start', [site]);
+      expect(ledger.rows.map(row => row.bucket_start.toISOString())).toEqual([daysAgo(2), lastFinal].map(d => d.toISOString()));
+    } finally { db.release(); }
+  });
+
+  it('keeps ledger rows and five-minute rollups that an agent replay still rebuilds', async () => {
+    const db = await getPool().connect();
+    try {
+      const mac = '00:00:00:00:03:01';
+      const site = (await db.query<{id: string}>(`INSERT INTO sites (unifi_id,internal_name,label)
+        VALUES ($1,'default','test') RETURNING id`, [`replay-${randomUUID()}`])).rows[0].id;
+      const client = (await db.query<{id: string}>(`INSERT INTO clients (site_id,mac)
+        VALUES ($1,$2) RETURNING id`, [site, mac])).rows[0].id;
+      await db.query(`INSERT INTO settings (id,raw_retention_days,five_minute_retention_days,hourly_retention_days)
+        VALUES (1,3,3,365) ON CONFLICT (id) DO UPDATE SET raw_retention_days=3,
+          five_minute_retention_days=3,hourly_retention_days=365`);
+      const bucket = (start: string, final: boolean, down: bigint): AgentBucket => ({start: new Date(start), final,
+        coverageSeconds: final ? 300 : 120, subjects: [{mac, internet: {up: 0n, down}, lan: {up: 0n, down: 0n}}]});
+      const rollup = async (resolution: string, start: string) => (await db.query<{bytes: string}>(`SELECT bytes::text
+        FROM traffic_rollups WHERE client_id=$1 AND scope='internet' AND direction='download' AND resolution=$2
+          AND bucket_start=$3`, [client, resolution, new Date(start)])).rows[0]?.bytes;
+      // The agent restarted during the 00:25 bucket, and the collector stopped
+      // before the new run sent anything. The last final bucket is 00:20.
+      await ingestAgentBuckets(db, site, [bucket('2026-11-25T23:55:00Z', true, 1n),
+        bucket('2026-11-26T00:05:00Z', true, 10n), bucket('2026-11-26T00:20:00Z', true, 100n)], 'old-run');
+      await ingestAgentBuckets(db, site, [bucket('2026-11-26T00:25:00Z', false, 1000n)], 'old-run');
+
+      // Five days later raw and five-minute retention are both 3 days. Rows
+      // before the resume point go, except the five-minute rows of its hour.
+      const now = new Date('2026-12-01T00:00:00Z');
+      expect(await pruneExpiredHistory(db, site, now)).toMatchObject({agentBuckets: 8, rollups: 4});
+      expect(await rollup('5m', '2026-11-25T23:55:00Z')).toBeUndefined();
+      expect(await rollup('5m', '2026-11-26T00:05:00Z')).toBe('10');
+
+      // The new run replays 00:25, counted from zero after the restart.
+      await ingestAgentBuckets(db, site, [bucket('2026-11-26T00:25:00Z', true, 2000n)], 'new-run');
+      expect(await rollup('5m', '2026-11-26T00:25:00Z')).toBe('3000');
+      expect(await rollup('1h', '2026-11-26T00:00:00Z')).toBe('3110');
+      expect(await rollup('1h', '2026-11-25T23:00:00Z')).toBe('1');
     } finally { db.release(); }
   });
 });

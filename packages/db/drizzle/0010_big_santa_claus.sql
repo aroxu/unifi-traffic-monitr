@@ -1,0 +1,1 @@
+ALTER TABLE "settings" ALTER COLUMN "raw_retention_days" SET DEFAULT 3;
